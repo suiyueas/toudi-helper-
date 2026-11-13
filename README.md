@@ -23,9 +23,9 @@
 ## 安装
 
 1. 安装浏览器扩展 [Tampermonkey（篡改猴）](https://www.tampermonkey.net/)。
-2. 点击下方按钮安装脚本（或将 [`jobfind-assistant.user.js`](./jobfind-assistant.user.js) 内容复制到 Tampermonkey 的"添加新脚本"中保存）：
+2. 点击下方按钮安装脚本（或将 [`toudi-helper-.user.js`](./toudi-helper-.user.js) 内容复制到 Tampermonkey 的"添加新脚本"中保存）：
 
-   [![Install](https://img.shields.io/badge/安装-用户脚本-brightgreen)](./jobfind-assistant.user.js)
+   [![Install](https://img.shields.io/badge/安装-用户脚本-brightgreen)](./toudi-helper-.user.js)
 
 3. 打开 [BOSS 直聘](https://www.zhipin.com/) 或 [智联招聘](https://www.zhaopin.com/) 的岗位列表页，右上角会出现脚本控制面板。
 
@@ -67,7 +67,7 @@
 
 ```
 toudi-helper-/
-├── jobfind-assistant.user.js   # 用户脚本本体（Tampermonkey 安装）
+├── toudi-helper-.user.js   # 用户脚本本体（Tampermonkey 安装）
 ├── README.md
 └── LICENSE                     # MIT
 ```
