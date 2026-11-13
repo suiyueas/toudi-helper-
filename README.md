@@ -1,4 +1,4 @@
-# jobfind-assissant
+<h1 align="center">toudi-helper-</h1>
 
 基于 Tampermonkey（篡改猴）的全平台自动求职投递脚本。支持 **BOSS 直聘**、**智联招聘**，内置智能关键词评分（过滤全栈/销售等坑岗）、自动打招呼、自定义文本及数据导出，帮你高效海投。
 
@@ -66,7 +66,7 @@
 ## 文件结构
 
 ```
-jobfind-assissant/
+toudi-helper-/
 ├── jobfind-assistant.user.js   # 用户脚本本体（Tampermonkey 安装）
 ├── README.md
 └── LICENSE                     # MIT
