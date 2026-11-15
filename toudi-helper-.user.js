@@ -62,7 +62,7 @@
     name: '全平台自动投递助手',
     version: '0.4.0',
     dbName: 'MultiPlatformJobDB',
-    dbVersion: 1,
+    dbVersion: 2,
     configKey: '__multi_platform_job_config__',
     runKey: '__multi_platform_job_run_state__',
     debugEnabledKey: '__multi_platform_job_debug_enabled__',
@@ -73,6 +73,8 @@
     appliedCompanyKey: '__multi_platform_job_applied_companies__',
     // 手动点过「清空名单」的标记；置位后不再从历史记录自动补播种（与"不可恢复"语义一致）。
     appliedCompanyClearedKey: '__multi_platform_job_applied_companies_cleared__',
+    // 每日投递配额计数：{ date: 'YYYY-MM-DD', count: n }，跨运行累计、换天自动重置。
+    dailyQuotaKey: '__multi_platform_job_daily_quota__',
     // 评分与模型语义评分（可选直连 OpenAI 兼容 API）。
     defaultScorePositive: 'Java,Java开发,Java后端,后端,Spring,SpringBoot,Spring Boot,SpringCloud,Spring Cloud,MyBatis,MySQL,Redis,消息队列,RabbitMQ,Kafka,分布式,微服务,高并发,多线程,JVM,Docker,Linux',
     defaultScoreNegative: '风电,光伏,新能源,共享充电宝,新媒体,短视频,直播,销售,客服,兼职',
@@ -561,6 +563,8 @@
     waitTimeout: 5,
     chatOpenRetries: 2,
     maxCount: 0,
+    // 每日投递配额：0=不限制；达到后当天停止自动投递（跨运行生效，次日自动重置）。
+    dailySendLimit: 0,
     // 公司过滤和数据维护选项。
     companyFilterMode: 'partial',
     companyFilterValue: '',
@@ -641,6 +645,8 @@
     appliedCompanyReady: false,
     // 自动化运行锁和停止标记，避免重复启动多个并发循环。
     automationLoopActive: false,
+    // 连续岗位处理失败计数：达到阈值后在等待环节叠加指数退避，成功一次即清零。
+    consecutiveFailures: 0,
     resumeInProgress: false,
     stopRequested: false,
     // 实时日志采集宽限期：投递停止后短暂保留，补录暂停/报错等收尾事件。
@@ -2831,7 +2837,7 @@
       return new Promise((resolve, reject) => {
         const request = indexedDB.open(APP.dbName, APP.dbVersion);
 
-        request.onupgradeneeded = () => {
+        request.onupgradeneeded = (event) => {
           const db = request.result;
 
           if (!db.objectStoreNames.contains('jobRecords')) {
@@ -2855,6 +2861,35 @@
 
           if (!db.objectStoreNames.contains('settings')) {
             db.createObjectStore('settings', { keyPath: 'key' });
+          }
+
+          // v2：已沟通判重 key 的轻量索引。只存 key 字符串，
+          // 避免每次启动都全表读 jobRecords（其中 rawHtmlDetail 单条可达数 KB）。
+          if (!db.objectStoreNames.contains('contactedKeys')) {
+            db.createObjectStore('contactedKeys', { keyPath: 'key' });
+          }
+
+          // 迁移兜底：老版本可能写入缺字段的记录（status/平台标识/时间戳缺失），
+          // 读取方一律按空值处理，这里补齐，避免后续逻辑读到半坏对象。
+          if (event.oldVersion >= 1 && db.objectStoreNames.contains('jobRecords')) {
+            try {
+              const tx = request.transaction;
+              const store = tx.objectStore('jobRecords');
+              const cursorReq = store.openCursor();
+              cursorReq.onsuccess = () => {
+                const cursor = cursorReq.result;
+                if (!cursor) return;
+                const row = cursor.value || {};
+                let changed = false;
+                if (typeof row.status !== 'string') { row.status = String(row.status || ''); changed = true; }
+                if (typeof row.platform !== 'string') { row.platform = String(row.platform || 'unknown'); changed = true; }
+                if (typeof row.jobKey !== 'string') { row.jobKey = String(row.jobKey || ''); changed = true; }
+                if (row.showSkills && !Array.isArray(row.showSkills)) { row.showSkills = []; changed = true; }
+                if (row.companyLabels && !Array.isArray(row.companyLabels)) { row.companyLabels = []; changed = true; }
+                if (changed) cursor.update(row);
+                cursor.continue();
+              };
+            } catch (_) { /* 迁移失败不阻断打开，读取方已有空值兜底 */ }
           }
         };
 
@@ -2895,7 +2930,8 @@
 
     // 写入单条记录，供岗位记录和已沟通投影共用。
     put(storeName, value) {
-      return this.withStore(storeName, 'readwrite', (store) => store.put(value));
+      return this.withStore(storeName, 'readwrite', (store) => store.put(value))
+        .then((result) => { this.invalidateCache(storeName); return result; });
     },
 
     // 通过主键读取单条记录。
@@ -2916,6 +2952,33 @@
         request.onsuccess = () => resolve(request.result || []);
         request.onerror = () => reject(request.error);
       }));
+    },
+
+    // 带内存缓存的全量读取：同一 store 短时间内被统计卡/列表/导出反复读取时命中缓存。
+    // 任何写操作（putMany/put/clearStore/deleteWhere）都会失效对应 store 的缓存，保证不读到旧数据。
+    // 返回数组副本，避免调用方原地排序/裁剪污染缓存。
+    getAllCached(storeName) {
+      const cache = this._cache || (this._cache = {});
+      if (cache[storeName]) return Promise.resolve(cache[storeName].slice());
+      return this.getAll(storeName).then((rows) => {
+        cache[storeName] = rows;
+        return rows.slice();
+      });
+    },
+
+    invalidateCache(storeName) {
+      if (!this._cache) return;
+      if (storeName) delete this._cache[storeName];
+      else this._cache = {};
+    },
+
+    // 批量写入（单事务），用于已沟通 key 索引回填等场景。
+    putMany(storeName, values) {
+      if (!values || !values.length) return Promise.resolve(0);
+      return this.withStore(storeName, 'readwrite', (store) => {
+        values.forEach((value) => store.put(value));
+        return values.length;
+      }).then((count) => { this.invalidateCache(storeName); return count; });
     },
 
     // 统计 store 条数，用于清理后校验和提示。
@@ -2942,7 +3005,7 @@
         };
         countRequest.onerror = () => reject(countRequest.error);
 
-        tx.oncomplete = () => resolve(count);
+        tx.oncomplete = () => { this.invalidateCache(storeName); resolve(count); };
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
       }));
@@ -2987,7 +3050,7 @@
         };
 
         request.onerror = () => reject(request.error);
-        tx.oncomplete = () => resolve(deleted);
+        tx.oncomplete = () => { this.invalidateCache(storeName); resolve(deleted); };
         tx.onerror = () => reject(predicateError || tx.error);
         tx.onabort = () => reject(predicateError || tx.error || new Error('IndexedDB transaction aborted'));
       }));
@@ -3038,6 +3101,8 @@
         rawDetail: job.rawDetail || (existing && existing.rawDetail) || null,
         rawHtmlDetail: job.rawHtmlDetail || (existing && existing.rawHtmlDetail) || null,
         rawCompanyDetail: job.rawCompanyDetail || (existing && existing.rawCompanyDetail) || null,
+        // 评分结果随记录落库（runScoreGate 挂在 job 上）；后续 clicked/sent 更新不丢首次评分。
+        scoreResult: job.scoreResult || (existing && existing.scoreResult) || null,
         updatedAt: time,
       });
 
@@ -3111,33 +3176,63 @@
 
   // 已沟通索引：用 Set 存岗位强 ID，避免每个岗位都扫 IndexedDB 或依赖页面按钮文本。
   // 页面上的“继续沟通”文案只能作为兜底判断，本地记录才是跨刷新、跨会话的主要依据。
+  // v2 起判重 key 单独存 contactedKeys store（每条只有几十字节），启动时不再全表读 jobRecords。
   const ContactedIndex = {
-    // 首次使用前从 IndexedDB 重建内存索引。
+    // 首次使用前重建内存索引：优先读轻量 key store，为空时回退全表扫描并回填。
     async ensureReady() {
       if (runtime.contactedIndexReady) return runtime.contactedJobKeys;
+      await Database.open().catch(() => null);
+      const cached = await Database.getAll('contactedKeys').catch(() => []);
+      if (cached.length) {
+        runtime.contactedJobKeys.clear();
+        cached.forEach((row) => row && row.key && runtime.contactedJobKeys.add(row.key));
+        runtime.contactedIndexReady = true;
+        return runtime.contactedJobKeys;
+      }
       return this.rebuild();
     },
 
-    // 从 jobRecords 和 greetedJobs 两个 store 汇总已沟通 key。
+    // 全量重建：从 jobRecords 和 greetedJobs 汇总已沟通 key，并回填轻量 store。
+    // 仅在首次升级（key store 为空）或按时间清理记录后调用，代价是可接受的一次性全表扫描。
     async rebuild() {
       runtime.contactedJobKeys.clear();
 
       const rows = await Database.getAll('jobRecords');
       rows.forEach((record) => {
-        if (isContactedRecord(record)) this.add(record);
+        if (isContactedRecord(record)) this.add(record, { persist: false });
       });
 
       // greetedJobs 是 sent 记录的投影；单独读取是为了兼容旧版本只写入 greetedJobs 的情况。
       const greetedRows = await Database.getAll('greetedJobs').catch(() => []);
-      greetedRows.forEach((record) => this.add(record));
+      greetedRows.forEach((record) => this.add(record, { persist: false }));
 
+      await this.persistKeys();
       runtime.contactedIndexReady = true;
       return runtime.contactedJobKeys;
     },
 
-    // 将某个岗位的所有可判重 key 加入内存 Set。
-    add(job) {
-      getContactedKeys(job).forEach((key) => runtime.contactedJobKeys.add(key));
+    // 将某个岗位的所有可判重 key 加入内存 Set；persist=false 时跳过写库（批量回填场景）。
+    add(job, options) {
+      const persist = !options || options.persist !== false;
+      const keys = getContactedKeys(job);
+      const fresh = [];
+      keys.forEach((key) => {
+        if (!runtime.contactedJobKeys.has(key)) {
+          runtime.contactedJobKeys.add(key);
+          fresh.push({ key });
+        }
+      });
+      // 增量补写轻量 store；运行中失败只影响下次启动的加载速度，内存索引仍然有效。
+      if (persist && fresh.length) Database.putMany('contactedKeys', fresh).catch(() => {});
+    },
+
+    // 把当前内存索引整体写回轻量 store（重建后回填用）。
+    async persistKeys() {
+      try {
+        await Database.clearStore('contactedKeys');
+        const rows = Array.from(runtime.contactedJobKeys, (key) => ({ key }));
+        await Database.putMany('contactedKeys', rows);
+      } catch (_) { /* 回填失败不致命：下次启动会重新全表扫描 */ }
     },
 
     // 判断岗位是否已沟通过；列表循环跳过重复岗位时调用。
@@ -3146,10 +3241,11 @@
       return keys.length > 0 && keys.some((key) => runtime.contactedJobKeys.has(key));
     },
 
-    // 清理 IndexedDB 后同步清空内存索引。
+    // 清理 IndexedDB 后同步清空内存索引与轻量 store。
     reset() {
       runtime.contactedJobKeys.clear();
       runtime.contactedIndexReady = false;
+      Database.clearStore('contactedKeys').catch(() => {});
     },
   };
 
@@ -3173,7 +3269,7 @@
       }
       // 名单为空（无存储 / 历史写入的 []）→ 从 jobRecords 幂等补播种一次，按公司名去重合并。
       if (!cleared && runtime.appliedCompanySet.size === 0) {
-        const rows = await Database.getAll('jobRecords').catch(() => []);
+        const rows = await Database.getAllCached('jobRecords').catch(() => []);
         rows.forEach((record) => {
           if (shouldCountAppliedRecord(record)) this.collect(record);
         });
@@ -3197,8 +3293,22 @@
       this.persist();
     },
 
-    // 写入 localStorage。
+    // 节流写入 localStorage：连续投递时 500ms 内的多次 add 合并成一次序列化+写盘，
+    // 避免名单变大后每次投递都同步全量 JSON.stringify。
     persist() {
+      this._persistDirty = true;
+      if (this._persistTimer) return;
+      this._persistTimer = setTimeout(() => this.flush(), 500);
+    },
+
+    // 立即落盘（节流窗口到期、页面隐藏或清空前调用），保证不丢最后一批写入。
+    flush() {
+      if (this._persistTimer) {
+        clearTimeout(this._persistTimer);
+        this._persistTimer = null;
+      }
+      if (!this._persistDirty) return;
+      this._persistDirty = false;
       try {
         localStorage.setItem(APP.appliedCompanyKey, JSON.stringify(Array.from(runtime.appliedCompanySet)));
       } catch (e) {
@@ -3215,6 +3325,12 @@
 
     // 清空名单（面板手动触发）：置"已手动清空"标记，之后不再从历史记录自动回补。
     clear() {
+      // 先取消挂起的节流写入，避免清空后定时器把旧名单重新写回。
+      if (this._persistTimer) {
+        clearTimeout(this._persistTimer);
+        this._persistTimer = null;
+      }
+      this._persistDirty = false;
       runtime.appliedCompanySet.clear();
       try { localStorage.removeItem(APP.appliedCompanyKey); } catch (_) {}
       try { localStorage.setItem(APP.appliedCompanyClearedKey, '1'); } catch (_) {}
@@ -3228,6 +3344,58 @@
 
     reset() {
       // reset 仅表示“重建内存态”，不再清空持久化名单；这里保留空实现以兼容调用点。
+    },
+  };
+
+  // 页面隐藏/关闭前把节流中的名单写入落盘，避免最后 500ms 内的投递记录丢失。
+  window.addEventListener('pagehide', () => AppliedCompanyIndex.flush());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') AppliedCompanyIndex.flush();
+  });
+
+  // 每日投递配额：按自然日计数存 localStorage，跨运行累计，换天自动归零。
+  // 与 maxCount（单次运行上限）相互独立，两者任一达到都会停。
+  const DailyQuota = {
+    todayKey() {
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `${now.getFullYear()}-${month}-${day}`;
+    },
+
+    // 读取今日计数；存储的日期不是今天则视为 0（跨天自动重置）。
+    count() {
+      try {
+        const raw = localStorage.getItem(APP.dailyQuotaKey);
+        if (!raw) return 0;
+        const data = JSON.parse(raw);
+        if (!data || data.date !== this.todayKey()) return 0;
+        return Math.max(0, Number(data.count) || 0);
+      } catch (_) {
+        return 0;
+      }
+    },
+
+    // 成功沟通一次后累加。
+    increment() {
+      const next = this.count() + 1;
+      try {
+        localStorage.setItem(APP.dailyQuotaKey, JSON.stringify({ date: this.todayKey(), count: next }));
+      } catch (_) { /* 存储失败不影响主流程，只是配额少算一次 */ }
+      return next;
+    },
+
+    // 配额是否已用尽；limit<=0 表示不限制。
+    reached(limit) {
+      const max = Number(limit) || 0;
+      return max > 0 && this.count() >= max;
+    },
+
+    // 面板展示用：剩余次数，不限制时返回 null。
+    remaining(limit) {
+      const max = Number(limit) || 0;
+      if (max <= 0) return null;
+      return Math.max(0, max - this.count());
     },
   };
 
@@ -3960,8 +4128,10 @@
                     <label>等待上限(秒)<input data-field="waitTimeout" type="number" min="2" step="1"></label>
                     <label>聊天重试次数<input data-field="chatOpenRetries" type="number" min="0" step="1"></label>
                     <label>最大沟通数<input data-field="maxCount" type="number" min="0" step="1"></label>
+                    <label>每日投递上限<input data-field="dailySendLimit" type="number" min="0" step="1" placeholder="0=不限"></label>
                     <label>列表刷新上限<input data-field="maxListRefresh" type="number" min="0" step="1" title="当前列表耗尽后最多整页刷新次数，0 表示不限制"></label>
                   </div>
+                  <p class="za-hint">最大沟通数=单次运行上限；每日投递上限=跨运行按自然日累计，用尽后当天停止，次日自动重置（0 均为不限制）。连续处理失败 3 次起会在随机间隔上叠加指数退避（30s→60s→120s，上限 300s），成功一次即恢复。</p>
                 </section>
 
                 <section class="za-section" data-feature-section="cityFilter">
@@ -5759,7 +5929,7 @@
       if (!ui || !ui.recordList) return;
       try {
         await Database.open();
-        const rows = await Database.getAll('jobRecords').catch(() => []);
+        const rows = await Database.getAllCached('jobRecords').catch(() => []);
         runtime.dataOverviewRows = rows;
         this.renderDataStats(rows);
         this.renderRecordList(rows);
@@ -6060,8 +6230,8 @@
   // 读取已沟通列表：优先使用 jobRecords 中的已沟通记录，再兼容 greetedJobs 旧投影。
   async function loadGreetedRows() {
     const [jobRows, greetedRows] = await Promise.all([
-      Database.getAll('jobRecords').catch(() => []),
-      Database.getAll('greetedJobs').catch(() => []),
+      Database.getAllCached('jobRecords').catch(() => []),
+      Database.getAllCached('greetedJobs').catch(() => []),
     ]);
     const byId = new Map();
 
@@ -6433,11 +6603,18 @@
             break;
           }
 
+          // 每日配额独立于单次运行上限：跨运行累计，用尽即停（次日自动重置）。
+          if (DailyQuota.reached(config.dailySendLimit)) {
+            this.stop(`已达到今日投递上限：${DailyQuota.count()}/${config.dailySendLimit}，明天会自动重置`);
+            break;
+          }
+
           let processed;
           try {
             processed = await this.processNextCard(state);
           } catch (error) {
             // 最外层兜底：即使卡片流程遗漏了异常，也只跳过当前循环，不将整轮置为 fatal。
+            this.noteCardFailure('scan_step');
             logDebugEvent('delivery_scan_step_failed_continue', {
               reason: '岗位扫描步骤异常，继续后续岗位',
               error: String((error && error.message) || error),
@@ -6593,6 +6770,7 @@
             return 'processed';
           } catch (error) {
             const message = String((error && error.message) || error);
+            this.noteCardFailure('blacklist_record');
             logDebugEvent('delivery_card_failed_continue', {
               cursorIndex,
               scanKey: key,
@@ -6608,10 +6786,13 @@
         }
 
         try {
-          return await this.communicateWithCard(card, job, cursorIndex, domInfo);
+          const outcome = await this.communicateWithCard(card, job, cursorIndex, domInfo);
+          this.noteCardSuccess();
+          return outcome;
         } catch (error) {
           // 单张岗位卡片失败不得终止整轮投递；记录现场后标记本轮已处理并继续下一张。
           const message = String((error && error.message) || error);
+          this.noteCardFailure('card_flow');
           logDebugEvent('delivery_card_failed_continue', {
             cursorIndex,
             scanKey: key,
@@ -6629,6 +6810,75 @@
       }
 
       return 'done';
+    },
+
+    // 共享评分闸门：BOSS 与智联两条链路共用（原先各写一份，改一处极易漏另一处）。
+    // 评分 → 打分日志 → 不通过则记录拒绝原因并推进游标返回 null，通过则返回 scoreResult。
+    async runScoreGate(job, cardDomInfo, card, scanKey) {
+      const scoreResult = await ScoreService.scoreEntry(
+        job,
+        Object.assign({}, cardDomInfo, {
+          text: [cardDomInfo.text, job.postDescription, ...(job.showSkills || [])].filter(Boolean).join(' '),
+        }),
+        card,
+      );
+      logDebugEvent('delivery_match_score', {
+        scanKey,
+        jobName: job.jobName || '',
+        company: job.company || '',
+        score: scoreResult.score,
+        grade: scoreResult.grade,
+        allowed: scoreResult.allowed,
+        reasons: scoreResult.reasons,
+        positiveMatches: scoreResult.positiveMatches,
+        negativeMatches: scoreResult.negativeMatches,
+      });
+      // 评分结果挂到 job 上：后续 clicked/sent 落库时一并写入，导出可复盘分数与理由。
+      job.scoreResult = {
+        score: scoreResult.score,
+        grade: scoreResult.grade,
+        allowed: scoreResult.allowed,
+        reasons: (scoreResult.reasons || []).slice(0, 20),
+        positiveMatches: scoreResult.positiveMatches || [],
+        negativeMatches: scoreResult.negativeMatches || [],
+        titleNegativeMatches: scoreResult.titleNegativeMatches || [],
+        coreHit: scoreResult.coreHit,
+        scoredAt: nowIso(),
+      };
+      if (!scoreResult.allowed) {
+        const reason = describeScoreRejection(scoreResult);
+        logDebugEvent('delivery_match_rejected', {
+          scanKey,
+          jobName: job.jobName || '',
+          company: job.company || '',
+          reason,
+          score: scoreResult.score,
+          grade: scoreResult.grade,
+          positiveMatches: scoreResult.positiveMatches,
+          negativeMatches: scoreResult.negativeMatches,
+          titleNegativeMatches: scoreResult.titleNegativeMatches || [],
+        }, 'warn');
+        // 被拒岗位也落库（不带 raw 大字段，避免详情 HTML 撑爆库），导出时可复盘"为什么没投"。
+        try {
+          await Database.saveJobRecord(
+            Object.assign({}, job, { rawJob: null, rawDetail: null, rawHtmlDetail: null, rawCompanyDetail: null }),
+            {
+              status: 'skipped_score',
+              skippedAt: nowIso(),
+              skipReason: 'score_filter',
+              scoreRejectReason: reason,
+              pageUrl: location.href,
+            },
+          );
+        } catch (error) {
+          logDebugEvent('score_reject_record_failed', { error: String((error && error.message) || error) }, 'warn');
+        }
+        const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
+        RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));
+        scrollAheadByJobKey(scanKey);
+        return null;
+      }
+      return scoreResult;
     },
 
     // 公司黑名单命中时记录跳过原因并推进游标；该状态不会加入已沟通判重集合。
@@ -6794,21 +7044,8 @@
         scrollAheadByJobKey(scanKey);
         return 'processed';
       }
-      const scoreResult = await ScoreService.scoreEntry(job, Object.assign({}, cardDomInfo, { text: [cardDomInfo.text, job.postDescription, ...(job.showSkills || [])].filter(Boolean).join(' ') }), card);
-      logDebugEvent('delivery_match_score', { scanKey, jobName: job.jobName || '', company: job.company || '', score: scoreResult.score, grade: scoreResult.grade, allowed: scoreResult.allowed, reasons: scoreResult.reasons, positiveMatches: scoreResult.positiveMatches, negativeMatches: scoreResult.negativeMatches });
-      if (!scoreResult.allowed) {
-        let reason;
-        if (scoreResult.titleNegativeHit) reason = `岗位名含负面词：${(scoreResult.titleNegativeMatches || []).join('、')}`;
-        else if (scoreResult.negativeMatches.length) reason = `命中反面词：${scoreResult.negativeMatches.join('、')}`;
-        else if (scoreResult.grade === 'low' && scoreResult.positiveMatches.length === 0) reason = '未命中任何关键词';
-        else if (scoreResult.grade === 'low') reason = `分数过低：${scoreResult.score} < 阈值`;
-        else reason = '评分不通过';
-        logDebugEvent('delivery_match_rejected', { scanKey, jobName: job.jobName || '', company: job.company || '', reason, score: scoreResult.score, grade: scoreResult.grade, positiveMatches: scoreResult.positiveMatches, negativeMatches: scoreResult.negativeMatches, titleNegativeMatches: scoreResult.titleNegativeMatches || [] }, 'warn');
-        const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
-        RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));
-        scrollAheadByJobKey(scanKey);
-        return 'processed';
-      }
+      const scoreResult = await this.runScoreGate(job, cardDomInfo, card, scanKey);
+      if (!scoreResult) return 'processed';
       logDebugEvent('delivery_match_accepted', { scanKey, jobName: job.jobName || '', company: job.company || '', city: cityDecision.target, score: scoreResult.score, grade: scoreResult.grade, reason: '城市与评分均通过，准备点击立即沟通' });
       logDebugEvent('job_detail_merged_before_chat', {
         cursorIndex,
@@ -7016,47 +7253,8 @@
         return 'processed';
       }
 
-      const scoreResult = await ScoreService.scoreEntry(
-        job,
-        Object.assign({}, cardDomInfo, {
-          text: [cardDomInfo.text, job.postDescription, ...(job.showSkills || [])].filter(Boolean).join(' '),
-        }),
-        card,
-      );
-      logDebugEvent('delivery_match_score', {
-        scanKey,
-        jobName: job.jobName || '',
-        company: job.company || '',
-        score: scoreResult.score,
-        grade: scoreResult.grade,
-        allowed: scoreResult.allowed,
-        reasons: scoreResult.reasons,
-        positiveMatches: scoreResult.positiveMatches,
-        negativeMatches: scoreResult.negativeMatches,
-      });
-      if (!scoreResult.allowed) {
-        let reason;
-        if (scoreResult.titleNegativeHit) reason = `岗位名含负面词：${(scoreResult.titleNegativeMatches || []).join('、')}`;
-        else if (scoreResult.negativeMatches.length) reason = `命中反面词：${scoreResult.negativeMatches.join('、')}`;
-        else if (scoreResult.grade === 'low' && scoreResult.positiveMatches.length === 0) reason = '未命中任何关键词';
-        else if (scoreResult.grade === 'low') reason = `分数过低：${scoreResult.score} < 阈值`;
-        else reason = '评分不通过';
-        logDebugEvent('delivery_match_rejected', {
-          scanKey,
-          jobName: job.jobName || '',
-          company: job.company || '',
-          reason,
-          score: scoreResult.score,
-          grade: scoreResult.grade,
-          positiveMatches: scoreResult.positiveMatches,
-          negativeMatches: scoreResult.negativeMatches,
-          titleNegativeMatches: scoreResult.titleNegativeMatches || [],
-        }, 'warn');
-        const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
-        RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));
-        scrollAheadByJobKey(scanKey);
-        return 'processed';
-      }
+      const scoreResult = await this.runScoreGate(job, cardDomInfo, card, scanKey);
+      if (!scoreResult) return 'processed';
 
       const blacklistDecision = findCompanyBlacklistMatch(job, cardDomInfo.company);
       if (blacklistDecision) {
@@ -7340,6 +7538,7 @@
         pendingJobKey: '',
         sentCount: Number(state.sentCount || 0) + (contacted ? 1 : 0),
       })));
+      if (contacted) DailyQuota.increment();
       if (resumeApplied) {
         UI.setStatus(
           greetingInjected
@@ -7480,6 +7679,7 @@
           });
           UI.upsertGreetedRecord(sentRecord);
           if (shouldCountAppliedRecord(sentRecord)) AppliedCompanyIndex.add(sentRecord || pendingJob);
+          DailyQuota.increment();
           RunState.patch(buildProcessedJobPatch(state, pendingJob, null, {
             phase: 'returning',
             sentCount: Number(state.sentCount || 0) + 1,
@@ -7543,6 +7743,7 @@
         });
         UI.upsertGreetedRecord(sentRecord);
         if (shouldCountAppliedRecord(sentRecord)) AppliedCompanyIndex.add(sentRecord || pendingJob);
+        DailyQuota.increment();
 
         const nextDelaySeconds = randomDelaySeconds(config.delayMin, config.delayMax);
         RunState.patch(buildProcessedJobPatch(state, pendingJob, null, {
@@ -7808,6 +8009,31 @@
     },
 
     // 两次沟通之间的随机等待，也负责检查最大沟通数上限。
+    // 连续失败计数：单张卡片/扫描步骤抛错时累加，供退避逻辑读取。
+    noteCardFailure(stage) {
+      runtime.consecutiveFailures = Number(runtime.consecutiveFailures || 0) + 1;
+      const count = runtime.consecutiveFailures;
+      if (count >= 3) {
+        const backoffSeconds = this.failureBackoffSeconds(count);
+        UI.setStatus(`连续失败 ${count} 次，下一次等待将延长至约 ${backoffSeconds} 秒`, 'warn');
+        logDebugEvent('delivery_consecutive_failures', { count, stage, backoffSeconds }, 'warn');
+      }
+    },
+
+    // 成功处理一张卡片即清零，退避只针对"连续"失败。
+    noteCardSuccess() {
+      if (runtime.consecutiveFailures) {
+        logDebugEvent('delivery_failure_streak_reset', { previous: runtime.consecutiveFailures });
+      }
+      runtime.consecutiveFailures = 0;
+    },
+
+    // 指数退避：3 次起 30s，之后 60s、120s，上限 300s。
+    failureBackoffSeconds(count) {
+      const exponent = Math.max(0, count - 3);
+      return Math.min(300, 30 * (2 ** exponent));
+    },
+
     async waitBeforeNextCommunication() {
       const state = RunState.load() || {};
       const maxCount = Number(config.maxCount || 0);
@@ -7820,6 +8046,11 @@
       let delaySeconds = Number(state.nextDelaySeconds || 0);
       if (!nextRunAt || nextRunAt <= Date.now()) {
         delaySeconds = randomDelaySeconds(config.delayMin, config.delayMax);
+        // 连续失败 >=3 次时在随机间隔上叠加指数退避，降低被平台风控的概率。
+        const failureCount = Number(runtime.consecutiveFailures || 0);
+        if (failureCount >= 3) {
+          delaySeconds += this.failureBackoffSeconds(failureCount);
+        }
         nextRunAt = Date.now() + delaySeconds * 1000;
         RunState.patch({ nextRunAt, nextDelaySeconds: delaySeconds });
       }
@@ -7828,6 +8059,7 @@
         delaySeconds,
         minSeconds: config.delayMin,
         maxSeconds: config.delayMax,
+        consecutiveFailures: Number(runtime.consecutiveFailures || 0),
         reason: '完成一次投递后，返回列表前往下一个岗位',
       });
 
@@ -7926,7 +8158,7 @@
       const saveHandlePromise = requestSaveFileHandle(outputFileName, exportExtension);
 
       try {
-        const rows = await Database.getAll('jobRecords');
+        const rows = await Database.getAllCached('jobRecords');
         const normalizedRows = rows
           .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
           .map((row) => ({
@@ -7972,6 +8204,10 @@
             工商所属行业: row.businessIndustry || '',
             经营范围: row.businessScope || '',
             消息预览: row.messagePreview || '',
+            评分: row.scoreResult ? Number(row.scoreResult.score) : '',
+            评分等级: row.scoreResult ? String(row.scoreResult.grade || '') : '',
+            评分理由: row.scoreResult ? (row.scoreResult.reasons || []).join('；') : '',
+            拒绝原因: row.scoreRejectReason || '',
             点击时间: row.clickedAt || '',
             发送时间: row.sentAt || '',
             更新时间: row.updatedAt || '',
@@ -8179,8 +8415,20 @@
 
   // 评分筛选服务：自动沟通前对岗位做关键词评分（可选附加模型语义分），
   // 在卡片上高亮并显示分数，低分岗位可按配置跳过沟通。
+
+  // 把评分不通过的原因翻译成人话；BOSS/智联共用，保持两个平台的拒绝文案一致。
+  function describeScoreRejection(scoreResult) {
+    if (scoreResult.titleNegativeHit) return `岗位名含负面词：${(scoreResult.titleNegativeMatches || []).join('、')}`;
+    if (scoreResult.negativeMatches.length) return `命中反面词：${scoreResult.negativeMatches.join('、')}`;
+    if (scoreResult.grade === 'low' && scoreResult.positiveMatches.length === 0) return '未命中任何关键词';
+    if (scoreResult.grade === 'low') return `分数过低：${scoreResult.score} < 阈值`;
+    return '评分不通过';
+  }
+
   const ScoreService = {
     lastResults: [],
+    // 模型连续失败计数：达到 3 熔断本会话的模型评分（见 scoreEntry）。
+    modelFailureStreak: 0,
 
     // 否定前缀：出现在关键词前表示"不要该方向"，不计入正面匹配。
     NEGATION_PREFIXES: ['不', '非', '勿', '无', '没', '免', '禁', '谢绝', '无需', '不要', '不用', '不招', '不需'],
@@ -8355,13 +8603,24 @@
       const local = this.scoreJob(text, jobTitle, skills);
       let modelDelta = 0;
       let modelScored = false;
-      if (config.modelEnabled && config.modelScoreEnabled) {
+      // 熔断：连续失败 3 次后本会话不再调模型，避免每个岗位都白等 20s 超时拖垮投递节奏。
+      const modelAvailable = config.modelEnabled && config.modelScoreEnabled && this.modelFailureStreak < 3;
+      if (modelAvailable) {
         try {
           modelDelta = await this.scoreJobWithModel(text);
           modelScored = true;
+          this.modelFailureStreak = 0;
           this.log('model_score', { jobName: jobTitle, score: modelDelta });
         } catch (error) {
-          this.log('model_score_failed', { error: String((error && error.message) || error) });
+          this.modelFailureStreak = (this.modelFailureStreak || 0) + 1;
+          this.log('model_score_failed', {
+            error: String((error && error.message) || error),
+            streak: this.modelFailureStreak,
+            circuitOpen: this.modelFailureStreak >= 3,
+          });
+          if (this.modelFailureStreak >= 3) {
+            this.log('model_circuit_open', { note: '连续失败 3 次，本会话改用纯本地评分' }, 'warn');
+          }
         }
       }
 
@@ -12099,6 +12358,9 @@
     }
     if (status === 'skipped_contacted' || status === 'skipped_local_contacted') {
       return { label: '重复跳过', cls: 'za-record-chip za-record-chip-skip' };
+    }
+    if (status === 'skipped_score') {
+      return { label: '评分跳过', cls: 'za-record-chip za-record-chip-skip' };
     }
     if (/^skipped/.test(status)) {
       return { label: '已跳过', cls: 'za-record-chip za-record-chip-skip' };

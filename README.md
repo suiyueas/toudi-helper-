@@ -15,6 +15,7 @@
   - 可选 OpenAI 兼容接口做语义评分（-10 ~ +20）。
 - **多维过滤**：城市、薪资区间、公司筛选/黑名单、公司已投递去重（跨批次）。
 - **跨批次去重**：跳过历史已沟通岗位（读取本地 IndexedDB 索引，刷新后依然生效）。
+- **节奏与风控**：每日投递配额（按自然日累计，跨运行生效）、连续失败指数退避（30s→300s）、模型评分连续失败自动熔断。
 - **自动投递主流程**：列表选岗 → 点击沟通 → 聊天页发送问候语/自定义文本 → 返回列表继续，随机时间间隔防检测。
 - **弹窗处理**：沟通次数提醒自动确认，硬限制自动暂停。
 - **数据管理**：岗位沟通记录导出（JSON/CSV）、一键清理、运行统计与 7 日趋势。
@@ -67,12 +68,33 @@
 
 ```
 toudi-helper-/
-├── toudi-helper-.user.js   # 用户脚本本体（Tampermonkey 安装）
+├── toudi-helper-.user.js   # 用户脚本本体（由 src/ 构建生成，Tampermonkey 安装）
+├── src/                     # 拆分后的 15 个源模块（日常维护改这里）
+│   ├── 00-header.js         #   UserScript 头
+│   ├── 01-app.js            #   常量与默认配置
+│   ├── 07-database.js       #   IndexedDB / 已沟通索引
+│   ├── 11-automation.js     #   投递主流程
+│   └── ...                  #   其余见 tools/parts.js
+├── tools/                   # 拆分/构建脚本（Node.js）
 ├── README.md
-└── LICENSE                     # MIT
+└── LICENSE                  # MIT
 ```
 
-脚本内部主要模块（单文件内按注释分区）：
+## 开发
+
+改动流程（需要 Node.js）：
+
+1. 编辑 `src/` 下对应模块（如 `src/11-automation.js`）。
+2. 运行 `node tools/build.js`，重新生成 `toudi-helper-.user.js` 并自动做语法校验与逐字节往返校验。
+3. 把生成的 `toudi-helper-.user.js` 全量复制进 Tampermonkey 保存，刷新页面生效。
+
+补充说明：
+
+- `node tools/split.js` 是一次性工具，把完整脚本按 `tools/parts.js` 的锚点重新拆进 `src/`；日常只需 `build.js`。
+- 锚点必须是文件中唯一的整行，拆分/构建都依赖它定位；改动如影响锚点需同步更新 `tools/parts.js`。
+- 生成产物与 `src/` 拼接结果逐字节一致，可放心用 diff 对比。
+
+脚本内部主要模块：
 
 - `RunState` — 跨页面状态机持久化
 - `JobRepository` — 岗位数据归一化与匹配

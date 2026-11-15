@@ -15,3 +15,7 @@ Desktop.ini
 
 # Node (if tooling added later)
 node_modules/
+
+# 构建快照（split 时保存，供 build 往返校验）
+.split-source
+
