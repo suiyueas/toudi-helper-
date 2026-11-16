@@ -2819,26 +2819,41 @@
     return String(config.allowedCities || '').split(/[\n,，、]+/).map(normalizeText).filter(Boolean);
   }
 
+  // 城市禁止列表：命中任一城市直接跳过，与允许列表使用同一套匹配规则。
+  function getBlockedCities() {
+    return String(config.blockedCities || '').split(/[\n,，、]+/).map(normalizeText).filter(Boolean);
+  }
+
+  // 单条城市规则匹配：=精确、/正则/、默认包含。
+  function cityRuleMatches(target, item) {
+    if (!item) return false;
+    // 精确匹配：=北京
+    if (item.startsWith('=')) return target === item.slice(1);
+    // 正则匹配：/北京|上海/
+    if (item.startsWith('/') && item.endsWith('/') && item.length > 2) {
+      try { return new RegExp(item.slice(1, -1)).test(target); } catch (_) { return false; }
+    }
+    // 默认包含匹配
+    return target.includes(item);
+  }
+
   function cityMatches(city) {
     const allowed = getAllowedCities();
+    const blocked = getBlockedCities();
     const target = normalizeText(city);
-    // 列表为空 = 用户未启用城市筛选，直接放行。
-    if (!allowed.length) return { matched: true, allowed, target, unrestricted: true };
-    // 启用了筛选但岗位城市读不出来时，保守跳过。
-    if (!target) return { matched: false, allowed, target };
 
-    const matched = allowed.some((item) => {
-      if (!item) return false;
-      // 精确匹配：=北京
-      if (item.startsWith('=')) return target === item.slice(1);
-      // 正则匹配：/北京|上海/
-      if (item.startsWith('/') && item.endsWith('/') && item.length > 2) {
-        try { return new RegExp(item.slice(1, -1)).test(target); } catch (_) { return false; }
-      }
-      // 默认包含匹配
-      return target.includes(item);
-    });
-    return { matched, allowed, target };
+    // 禁止列表优先：命中即拒绝，哪怕允许列表也命中。
+    if (target && blocked.length && blocked.some((item) => cityRuleMatches(target, item))) {
+      return { matched: false, blocked: true, allowed, blockedCities: blocked, target };
+    }
+
+    // 列表为空 = 用户未启用城市筛选，直接放行。
+    if (!allowed.length) return { matched: true, allowed, blockedCities: blocked, target, unrestricted: true };
+    // 启用了筛选但岗位城市读不出来时，保守跳过。
+    if (!target) return { matched: false, allowed, blockedCities: blocked, target };
+
+    const matched = allowed.some((item) => cityRuleMatches(target, item));
+    return { matched, allowed, blockedCities: blocked, target };
   }
 
   // 解析岗位薪资文本为月薪区间（单位：K）。

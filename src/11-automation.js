@@ -583,10 +583,11 @@
         jobName: job.jobName || '',
         city: cityDecision.target,
         allowedCities: cityDecision.allowed,
+        blockedCities: cityDecision.blockedCities,
         matched: cityDecision.matched,
       });
       if (!cityDecision.matched) {
-        logDebugEvent('delivery_match_rejected', { scanKey, jobName: job.jobName || '', company: job.company || '', reason: '城市不在允许列表', city: cityDecision.target, allowedCities: cityDecision.allowed }, 'warn');
+        logDebugEvent('delivery_match_rejected', { scanKey, jobName: job.jobName || '', company: job.company || '', reason: cityDecision.blocked ? '城市在禁止列表' : '城市不在允许列表', city: cityDecision.target, allowedCities: cityDecision.allowed, blockedCities: cityDecision.blockedCities }, 'warn');
         const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
         RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));
         scrollAheadByJobKey(scanKey);
@@ -783,6 +784,7 @@
         jobName: job.jobName || '',
         city: cityDecision.target,
         allowedCities: cityDecision.allowed,
+        blockedCities: cityDecision.blockedCities,
         matched: cityDecision.matched,
       });
       if (!cityDecision.matched) {
@@ -790,9 +792,10 @@
           scanKey,
           jobName: job.jobName || '',
           company: job.company || '',
-          reason: '城市不在允许列表',
+          reason: cityDecision.blocked ? '城市在禁止列表' : '城市不在允许列表',
           city: cityDecision.target,
           allowedCities: cityDecision.allowed,
+          blockedCities: cityDecision.blockedCities,
         }, 'warn');
         const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
         RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));

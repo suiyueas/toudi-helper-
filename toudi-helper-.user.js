@@ -554,6 +554,7 @@
     delayMin: 4,
     delayMax: 8,
     allowedCities: '', // 留空=不限制城市（平台搜索条件已做初步筛选）；命中列表中任一城市才投递。
+    blockedCities: '', // 禁止城市列表：留空=不启用；命中任一城市直接跳过，优先级高于允许列表。
     // 薪资筛选：按岗位薪资区间与所填月薪区间取交集，不重叠才跳过；薪资不明时保留。
     salaryFilterEnabled: false,
     salaryMinK: 0,
@@ -4139,7 +4140,10 @@
                   <label>允许城市列表（命中任意城市即可）
                     <input data-field="allowedCities" type="text" placeholder="留空不限制城市；例如：北京,上海,深圳">
                   </label>
-                  <p class="za-hint">支持逗号、中文逗号或换行分隔；留空表示不限制城市，未命中时跳过岗位。</p>
+                  <label>禁止城市列表（命中任一城市则不投递）
+                    <input data-field="blockedCities" type="text" placeholder="留空不启用；例如：北京,廊坊,燕郊">
+                  </label>
+                  <p class="za-hint">两个列表都支持逗号、中文逗号或换行分隔，条目支持普通包含匹配、=城市 精确匹配、/正则/ 匹配。允许列表留空=不限制城市；禁止列表命中时直接跳过该岗位，且优先级高于允许列表（例如允许"北京"但禁止"燕郊"时，燕郊岗位会被跳过）。</p>
                 </section>
 
                 <section class="za-section" data-feature-section="companyFilter">
@@ -7001,10 +7005,11 @@
         jobName: job.jobName || '',
         city: cityDecision.target,
         allowedCities: cityDecision.allowed,
+        blockedCities: cityDecision.blockedCities,
         matched: cityDecision.matched,
       });
       if (!cityDecision.matched) {
-        logDebugEvent('delivery_match_rejected', { scanKey, jobName: job.jobName || '', company: job.company || '', reason: '城市不在允许列表', city: cityDecision.target, allowedCities: cityDecision.allowed }, 'warn');
+        logDebugEvent('delivery_match_rejected', { scanKey, jobName: job.jobName || '', company: job.company || '', reason: cityDecision.blocked ? '城市在禁止列表' : '城市不在允许列表', city: cityDecision.target, allowedCities: cityDecision.allowed, blockedCities: cityDecision.blockedCities }, 'warn');
         const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
         RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));
         scrollAheadByJobKey(scanKey);
@@ -7201,6 +7206,7 @@
         jobName: job.jobName || '',
         city: cityDecision.target,
         allowedCities: cityDecision.allowed,
+        blockedCities: cityDecision.blockedCities,
         matched: cityDecision.matched,
       });
       if (!cityDecision.matched) {
@@ -7208,9 +7214,10 @@
           scanKey,
           jobName: job.jobName || '',
           company: job.company || '',
-          reason: '城市不在允许列表',
+          reason: cityDecision.blocked ? '城市在禁止列表' : '城市不在允许列表',
           city: cityDecision.target,
           allowedCities: cityDecision.allowed,
+          blockedCities: cityDecision.blockedCities,
         }, 'warn');
         const state = Object.assign({}, RunState.load() || {}, { pendingJobKey: scanKey });
         RunState.patch(buildProcessedJobPatch(state, job, cardDomInfo, Object.assign(captureJobListPosition(job), { pendingJobKey: '' })));
@@ -11917,26 +11924,41 @@
     return String(config.allowedCities || '').split(/[\n,，、]+/).map(normalizeText).filter(Boolean);
   }
 
+  // 城市禁止列表：命中任一城市直接跳过，与允许列表使用同一套匹配规则。
+  function getBlockedCities() {
+    return String(config.blockedCities || '').split(/[\n,，、]+/).map(normalizeText).filter(Boolean);
+  }
+
+  // 单条城市规则匹配：=精确、/正则/、默认包含。
+  function cityRuleMatches(target, item) {
+    if (!item) return false;
+    // 精确匹配：=北京
+    if (item.startsWith('=')) return target === item.slice(1);
+    // 正则匹配：/北京|上海/
+    if (item.startsWith('/') && item.endsWith('/') && item.length > 2) {
+      try { return new RegExp(item.slice(1, -1)).test(target); } catch (_) { return false; }
+    }
+    // 默认包含匹配
+    return target.includes(item);
+  }
+
   function cityMatches(city) {
     const allowed = getAllowedCities();
+    const blocked = getBlockedCities();
     const target = normalizeText(city);
-    // 列表为空 = 用户未启用城市筛选，直接放行。
-    if (!allowed.length) return { matched: true, allowed, target, unrestricted: true };
-    // 启用了筛选但岗位城市读不出来时，保守跳过。
-    if (!target) return { matched: false, allowed, target };
 
-    const matched = allowed.some((item) => {
-      if (!item) return false;
-      // 精确匹配：=北京
-      if (item.startsWith('=')) return target === item.slice(1);
-      // 正则匹配：/北京|上海/
-      if (item.startsWith('/') && item.endsWith('/') && item.length > 2) {
-        try { return new RegExp(item.slice(1, -1)).test(target); } catch (_) { return false; }
-      }
-      // 默认包含匹配
-      return target.includes(item);
-    });
-    return { matched, allowed, target };
+    // 禁止列表优先：命中即拒绝，哪怕允许列表也命中。
+    if (target && blocked.length && blocked.some((item) => cityRuleMatches(target, item))) {
+      return { matched: false, blocked: true, allowed, blockedCities: blocked, target };
+    }
+
+    // 列表为空 = 用户未启用城市筛选，直接放行。
+    if (!allowed.length) return { matched: true, allowed, blockedCities: blocked, target, unrestricted: true };
+    // 启用了筛选但岗位城市读不出来时，保守跳过。
+    if (!target) return { matched: false, allowed, blockedCities: blocked, target };
+
+    const matched = allowed.some((item) => cityRuleMatches(target, item));
+    return { matched, allowed, blockedCities: blocked, target };
   }
 
   // 解析岗位薪资文本为月薪区间（单位：K）。

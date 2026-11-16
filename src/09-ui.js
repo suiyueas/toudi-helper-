@@ -188,7 +188,10 @@
                   <label>允许城市列表（命中任意城市即可）
                     <input data-field="allowedCities" type="text" placeholder="留空不限制城市；例如：北京,上海,深圳">
                   </label>
-                  <p class="za-hint">支持逗号、中文逗号或换行分隔；留空表示不限制城市，未命中时跳过岗位。</p>
+                  <label>禁止城市列表（命中任一城市则不投递）
+                    <input data-field="blockedCities" type="text" placeholder="留空不启用；例如：北京,廊坊,燕郊">
+                  </label>
+                  <p class="za-hint">两个列表都支持逗号、中文逗号或换行分隔，条目支持普通包含匹配、=城市 精确匹配、/正则/ 匹配。允许列表留空=不限制城市；禁止列表命中时直接跳过该岗位，且优先级高于允许列表（例如允许"北京"但禁止"燕郊"时，燕郊岗位会被跳过）。</p>
                 </section>
 
                 <section class="za-section" data-feature-section="companyFilter">

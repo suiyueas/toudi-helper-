@@ -494,6 +494,7 @@
     delayMin: 4,
     delayMax: 8,
     allowedCities: '', // 留空=不限制城市（平台搜索条件已做初步筛选）；命中列表中任一城市才投递。
+    blockedCities: '', // 禁止城市列表：留空=不启用；命中任一城市直接跳过，优先级高于允许列表。
     // 薪资筛选：按岗位薪资区间与所填月薪区间取交集，不重叠才跳过；薪资不明时保留。
     salaryFilterEnabled: false,
     salaryMinK: 0,
