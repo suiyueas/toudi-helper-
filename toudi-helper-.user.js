@@ -688,9 +688,20 @@
 
     const mount = () => {
       if (runtime.ui || !document.body || !isAllowedDisplayPage()) return;
-      // 本轮去重只跨越投递产生的页面导航；真实刷新/重载后立即失效。
+      // 本轮去重只跨越投递产生的页面导航；真实刷新/重载后不再自动续跑。
+      // 但 paused 现场保留（已处理岗位、列表位置、暂停原因），用户手动启动时可从暂停处继续。
       if (isDocumentReload()) {
+        const stale = RunState.load();
+        const keepPaused = stale && stale.phase === 'paused';
         RunState.clear();
+        if (keepPaused) {
+          RunState.save(Object.assign({}, stale, {
+            active: false,
+            phase: 'paused',
+            nextRunAt: null,
+            nextDelaySeconds: null,
+          }));
+        }
       }
       Database.open().catch((error) => console.warn('[ZhipinAuto] IndexedDB 初始化失败', error));
       UI.mount();
@@ -6474,8 +6485,10 @@
       const listPosition = captureJobListPosition();
       // 同时冻结 active 标签和接口参数；仅保存列表 URL 无法区分“推荐”和具体求职期望。
       const listExpectationContext = captureActiveJobExpectationContext();
-      // 一轮运行锁定同一个筛选 URL；先回扫顶部，再用岗位标识从上到下累计处理虚拟列表。
-      RunState.save({
+      // 暂停（改参数、弹窗提醒等）后重新启动：同一筛选列表直接从暂停处续扫，不再回顶部重扫。
+      const resumePlan = this.buildPausedResumePlan(RunState.load(), listUrl);
+      // 一轮运行锁定同一个筛选 URL；未续扫时先回扫顶部，再用岗位标识从上到下累计处理虚拟列表。
+      RunState.save(Object.assign({
         active: true,
         phase: 'list',
         cursorIndex: Math.max(0, startIndex),
@@ -6505,10 +6518,49 @@
         chatOpenRetryCount: 0,
         listRefreshCount: 0,
         startedAt: nowIso(),
-      });
+        resumedFromPause: false,
+      }, resumePlan));
 
       runtime.stopRequested = false;
-      this.runListLoop('start');
+      if (resumePlan) {
+        logDebugEvent('scan_resume_from_pause', {
+          processedCount: resumePlan.processedKeys.length,
+          cursorIndex: resumePlan.cursorIndex,
+          listScrollTop: resumePlan.listScrollTop,
+          pauseReason: resumePlan.pauseReason,
+        });
+        // 暂停期间页面可能被滚回顶部或刷新过，先把列表拉回暂停时的位置再继续向下扫。
+        await restoreJobListPosition(RunState.load());
+      }
+      this.runListLoop(resumePlan ? `resume：从暂停处继续（已处理 ${resumePlan.processedKeys.length} 个岗位）` : 'start');
+    },
+
+    // 暂停现场能否续扫：仅限同一筛选列表的 paused 状态，且确实扫过岗位。
+    // 不满足任一条件返回 null，start() 保持原来的“回顶部从头扫”行为。
+    buildPausedResumePlan(previous, currentListUrl) {
+      if (!previous || previous.phase !== 'paused') return null;
+      if (!Array.isArray(previous.processedKeys) || !previous.processedKeys.length) return null;
+      if (!previous.listUrl || !isSameJobListFilterContext(currentListUrl, previous.listUrl, previous.listFilterSignature)) return null;
+
+      const processedKeys = previous.processedKeys.filter(Boolean);
+      // 暂停发生在沟通中途时，把未完成的岗位也记为已处理，避免续跑后重复打招呼。
+      const pendingKey = normalizeText(previous.pendingJobKey);
+      if (pendingKey && !processedKeys.includes(pendingKey)) processedKeys.push(pendingKey);
+
+      return {
+        cursorIndex: Math.max(Number(previous.cursorIndex || 0), processedKeys.length),
+        processedKeys,
+        // 续扫保持向下扫描，跳过 scanJobListToTop 的回顶过程。
+        scanPhase: 'scanning_down',
+        scanNoProgressCount: 0,
+        scanDiscoveredCount: Math.max(Number(previous.scanDiscoveredCount || 0), processedKeys.length),
+        listScrollTop: Math.max(0, Number(previous.listScrollTop || 0)),
+        listAnchorKey: String(previous.listAnchorKey || ''),
+        // 刷新续跑次数跨暂停累计，避免每暂停一次就把刷新额度重置。
+        listRefreshCount: Number(previous.listRefreshCount || 0),
+        resumedFromPause: true,
+        pauseReason: String(previous.pauseReason || '已暂停'),
+      };
     },
 
     // 停止自动化：写入 RunState，并解锁 UI。

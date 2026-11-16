@@ -15,9 +15,20 @@
 
     const mount = () => {
       if (runtime.ui || !document.body || !isAllowedDisplayPage()) return;
-      // 本轮去重只跨越投递产生的页面导航；真实刷新/重载后立即失效。
+      // 本轮去重只跨越投递产生的页面导航；真实刷新/重载后不再自动续跑。
+      // 但 paused 现场保留（已处理岗位、列表位置、暂停原因），用户手动启动时可从暂停处继续。
       if (isDocumentReload()) {
+        const stale = RunState.load();
+        const keepPaused = stale && stale.phase === 'paused';
         RunState.clear();
+        if (keepPaused) {
+          RunState.save(Object.assign({}, stale, {
+            active: false,
+            phase: 'paused',
+            nextRunAt: null,
+            nextDelaySeconds: null,
+          }));
+        }
       }
       Database.open().catch((error) => console.warn('[ZhipinAuto] IndexedDB 初始化失败', error));
       UI.mount();
