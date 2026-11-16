@@ -4277,7 +4277,7 @@
                     <label>中分阈值<input data-field="scoreMidThreshold" type="number" min="0" step="1"></label>
                   </div>
                   <div class="za-score-result" data-role="scoreResultList"></div>
-                  <p class="za-hint">过滤规则：核心词必中优先（启用后岗位需命中其一才投）；岗位名直接含负面词则硬否决（不看分数，开启"岗位名含负面词直接跳过"时生效）；good/mid 通过；low 分且有正面词命中也通过；low 分无命中或有负面词命中则跳过。计分按长词优先去重（如 Java 与 Java后端 对同一段文字只计一次，不再叠分）；岗位名和技能命中额外加分；负面词在岗位名命中时按"负面·岗位名扣分"再额外扣。否定前缀（如"不招运维"）自动忽略。多词技能用空格分隔（如 Spring Boot）。</p>
+                  <p class="za-hint">过滤规则：核心词必中优先（启用后岗位需命中其一才投）；岗位名直接含负面词则硬否决（不看分数，开启"岗位名含负面词直接跳过"时生效）；good/mid 通过；low 分且有正面词命中也通过；low 分无命中或有负面词命中则跳过。例外：正面分（未扣负面分）达到中分阈值且命中 ≥3 个正面词时，正文里零星的负面词不再否决。计分按长词优先去重（如 Java 与 Java后端 对同一段文字只计一次，不再叠分）；岗位名和技能命中额外加分；负面词在岗位名命中时按"负面·岗位名扣分"再额外扣。否定前缀（如"不招运维"）自动忽略。多词技能用空格分隔（如 Spring Boot）。注意：负面权重 × 命中数一旦超过正面分，分数就会掉到阈值以下导致跳过——负面词宜少而准。</p>
                 </section>
 
                 <section class="za-section" data-feature-section="model">
@@ -8658,10 +8658,12 @@
       // 岗位名直接含负面词：不看分数，不给 good/mid 洗白的机会。
       if (config.scoreTitleNegativeReject && result.titleNegativeHit) return false;
       if (result.grade === 'good' || result.grade === 'mid') return true;
-      // 强正面证据：正面得分已达高分阈值且命中 ≥3 个正面词时，正文里零星出现的负面词不再否决。
-      // 避免"Java 岗 JD 里顺带提了句销售/客服"被 -60 直接拖成 low 而误杀（岗位名负面词已在上面硬否决）。
-      const goodThreshold = readNumberConfig(config.scoreGoodThreshold, 35);
-      if (result.posScore >= goodThreshold && (result.positiveMatches || []).length >= 3) return true;
+      // 强正面证据：去掉负面扣分后的正面分已达中分阈值、且命中 ≥3 个正面词时，
+      // 正文里零星出现的负面词不再否决（岗位名负面词已在上面硬否决）。
+      // 门槛用中分阈值而不是高分阈值：阈值被调高时（如 40/80）规则依然按"本该及格的分"判断，
+      // 避免"正面 52 分、被一个 -60 拖成 -8"这类好岗位被误杀。
+      const midThreshold = readNumberConfig(config.scoreMidThreshold, 15);
+      if (result.posScore >= midThreshold && (result.positiveMatches || []).length >= 3) return true;
       // low 分：有正面词命中且无负面词时仍允许（避免误杀边缘岗位）
       if (result.positiveMatches.length > 0 && result.negativeMatches.length === 0) return true;
       // low 分 + 有负面词命中：跳过

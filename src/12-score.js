@@ -172,10 +172,12 @@
       // 岗位名直接含负面词：不看分数，不给 good/mid 洗白的机会。
       if (config.scoreTitleNegativeReject && result.titleNegativeHit) return false;
       if (result.grade === 'good' || result.grade === 'mid') return true;
-      // 强正面证据：正面得分已达高分阈值且命中 ≥3 个正面词时，正文里零星出现的负面词不再否决。
-      // 避免"Java 岗 JD 里顺带提了句销售/客服"被 -60 直接拖成 low 而误杀（岗位名负面词已在上面硬否决）。
-      const goodThreshold = readNumberConfig(config.scoreGoodThreshold, 35);
-      if (result.posScore >= goodThreshold && (result.positiveMatches || []).length >= 3) return true;
+      // 强正面证据：去掉负面扣分后的正面分已达中分阈值、且命中 ≥3 个正面词时，
+      // 正文里零星出现的负面词不再否决（岗位名负面词已在上面硬否决）。
+      // 门槛用中分阈值而不是高分阈值：阈值被调高时（如 40/80）规则依然按"本该及格的分"判断，
+      // 避免"正面 52 分、被一个 -60 拖成 -8"这类好岗位被误杀。
+      const midThreshold = readNumberConfig(config.scoreMidThreshold, 15);
+      if (result.posScore >= midThreshold && (result.positiveMatches || []).length >= 3) return true;
       // low 分：有正面词命中且无负面词时仍允许（避免误杀边缘岗位）
       if (result.positiveMatches.length > 0 && result.negativeMatches.length === 0) return true;
       // low 分 + 有负面词命中：跳过
