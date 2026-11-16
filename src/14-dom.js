@@ -5587,6 +5587,11 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      #zhipin-auto-greeting-root .za-record-reason {
+        flex: 0 1 auto;
+        color: var(--za-danger);
+        font-weight: 600;
+      }
       #zhipin-auto-greeting-root .za-record-empty {
         padding: 20px 10px;
         text-align: center;

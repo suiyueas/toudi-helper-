@@ -2108,7 +2108,11 @@
             .filter(Boolean)
             .map((item) => `<span>${escapeHtml(String(item))}</span>`)
             .join('');
-          return `<div class="za-record-row"><div class="za-record-main"><span class="za-record-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span><span class="${meta.cls}">${meta.label}</span></div><div class="za-record-meta">${extras}</div></div>`;
+          // 评分跳过的记录直接把拒绝原因显示出来（原来看不到，只能导出 CSV 才知道为什么跳）。
+          const skipReason = record.status === 'skipped_score' && record.scoreRejectReason
+            ? `<span class="za-record-reason" title="${escapeHtml(String(record.scoreRejectReason))}">${escapeHtml(String(record.scoreRejectReason))}</span>`
+            : '';
+          return `<div class="za-record-row"><div class="za-record-main"><span class="za-record-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span><span class="${meta.cls}" title="${escapeHtml(String(record.scoreRejectReason || ''))}">${meta.label}</span></div><div class="za-record-meta">${skipReason}${extras}</div></div>`;
         }).join('');
       }
       if (ui.recordListMeta) {

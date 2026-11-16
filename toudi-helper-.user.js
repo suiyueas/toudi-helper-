@@ -6071,7 +6071,11 @@
             .filter(Boolean)
             .map((item) => `<span>${escapeHtml(String(item))}</span>`)
             .join('');
-          return `<div class="za-record-row"><div class="za-record-main"><span class="za-record-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span><span class="${meta.cls}">${meta.label}</span></div><div class="za-record-meta">${extras}</div></div>`;
+          // 评分跳过的记录直接把拒绝原因显示出来（原来看不到，只能导出 CSV 才知道为什么跳）。
+          const skipReason = record.status === 'skipped_score' && record.scoreRejectReason
+            ? `<span class="za-record-reason" title="${escapeHtml(String(record.scoreRejectReason))}">${escapeHtml(String(record.scoreRejectReason))}</span>`
+            : '';
+          return `<div class="za-record-row"><div class="za-record-main"><span class="za-record-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span><span class="${meta.cls}" title="${escapeHtml(String(record.scoreRejectReason || ''))}">${meta.label}</span></div><div class="za-record-meta">${skipReason}${extras}</div></div>`;
         }).join('');
       }
       if (ui.recordListMeta) {
@@ -6892,6 +6896,8 @@
       // 评分结果挂到 job 上：后续 clicked/sent 落库时一并写入，导出可复盘分数与理由。
       job.scoreResult = {
         score: scoreResult.score,
+        posScore: scoreResult.posScore,
+        negDeduction: scoreResult.negDeduction,
         grade: scoreResult.grade,
         allowed: scoreResult.allowed,
         reasons: (scoreResult.reasons || []).slice(0, 20),
@@ -8264,6 +8270,8 @@
             经营范围: row.businessScope || '',
             消息预览: row.messagePreview || '',
             评分: row.scoreResult ? Number(row.scoreResult.score) : '',
+            正面分: row.scoreResult ? Number(row.scoreResult.posScore || 0) : '',
+            负面扣分: row.scoreResult ? Number(row.scoreResult.negDeduction || 0) : '',
             评分等级: row.scoreResult ? String(row.scoreResult.grade || '') : '',
             评分理由: row.scoreResult ? (row.scoreResult.reasons || []).join('；') : '',
             拒绝原因: row.scoreRejectReason || '',
@@ -8477,10 +8485,12 @@
 
   // 把评分不通过的原因翻译成人话；BOSS/智联共用，保持两个平台的拒绝文案一致。
   function describeScoreRejection(scoreResult) {
+    const breakdown = `（正面 ${Number(scoreResult.posScore || 0)} − 负面 ${Number(scoreResult.negDeduction || 0)} = ${Number(scoreResult.score || 0)}）`;
     if (scoreResult.titleNegativeHit) return `岗位名含负面词：${(scoreResult.titleNegativeMatches || []).join('、')}`;
-    if (scoreResult.negativeMatches.length) return `命中反面词：${scoreResult.negativeMatches.join('、')}`;
+    if (scoreResult.coreEnabled && !scoreResult.coreHit) return '核心词未命中';
+    if (scoreResult.negativeMatches.length) return `命中反面词：${scoreResult.negativeMatches.join('、')} ${breakdown}`;
     if (scoreResult.grade === 'low' && scoreResult.positiveMatches.length === 0) return '未命中任何关键词';
-    if (scoreResult.grade === 'low') return `分数过低：${scoreResult.score} < 阈值`;
+    if (scoreResult.grade === 'low') return `分数过低：${scoreResult.score} < 阈值 ${breakdown}`;
     return '评分不通过';
   }
 
@@ -8523,6 +8533,9 @@
       const skillText = Array.isArray(skills) ? skills.join(' ').toLocaleLowerCase() : '';
 
       let score = 0;
+      // 正面总分与负面总扣分分开记录：判断"强正面证据"和展示分数构成时用。
+      let posScore = 0;
+      let negDeduction = 0;
       const reasons = [];
       const positiveMatches = [];
       const negativeMatches = [];
@@ -8570,6 +8583,7 @@
         }
         const total = posWeight + bonus;
         score += total;
+        posScore += total;
         reasons.push(`命中:${word}${location ? `(${location}+${bonus})` : `(+${posWeight})`}`);
         positiveMatches.push(word);
       }
@@ -8605,12 +8619,16 @@
           deduced += negTitleBonus;
         }
         score -= deduced;
+        negDeduction += deduced;
         reasons.push(`排除:${word}(-${deduced})`);
         negativeMatches.push(word);
       }
 
       return {
         score,
+        // 正面总分 / 负面总扣分：用于"强正面证据放行"判断和面板分数构成展示。
+        posScore,
+        negDeduction,
         reasons,
         positiveMatches,
         negativeMatches,
@@ -8640,6 +8658,10 @@
       // 岗位名直接含负面词：不看分数，不给 good/mid 洗白的机会。
       if (config.scoreTitleNegativeReject && result.titleNegativeHit) return false;
       if (result.grade === 'good' || result.grade === 'mid') return true;
+      // 强正面证据：正面得分已达高分阈值且命中 ≥3 个正面词时，正文里零星出现的负面词不再否决。
+      // 避免"Java 岗 JD 里顺带提了句销售/客服"被 -60 直接拖成 low 而误杀（岗位名负面词已在上面硬否决）。
+      const goodThreshold = readNumberConfig(config.scoreGoodThreshold, 35);
+      if (result.posScore >= goodThreshold && (result.positiveMatches || []).length >= 3) return true;
       // low 分：有正面词命中且无负面词时仍允许（避免误杀边缘岗位）
       if (result.positiveMatches.length > 0 && result.negativeMatches.length === 0) return true;
       // low 分 + 有负面词命中：跳过
@@ -8688,6 +8710,8 @@
         title: jobTitle,
         company: (job && job.company) || '',
         score,
+        posScore: local.posScore,
+        negDeduction: local.negDeduction,
         reasons: local.reasons,
         positiveMatches: local.positiveMatches,
         negativeMatches: local.negativeMatches,
@@ -8738,9 +8762,9 @@
         `<div class="za-score-row">` +
         `<span class="za-score-title" title="${escapeHtml(String(item.title || ''))}">${escapeHtml(String(item.title || '')).slice(0, 22)}</span>` +
         `<span class="za-score-grade za-score-grade-${item.grade}">${item.grade}</span>` +
-        `<b class="za-score-value">${Number(item.score)}</b>` +
+        `<b class="za-score-value" title="正面 ${Number(item.posScore || 0)} − 负面 ${Number(item.negDeduction || 0)}">${Number(item.score)}</b>` +
         (item.modelScored ? `<span class="za-score-model" title="含模型语义分">模型${item.modelDelta >= 0 ? '+' : ''}${Number(item.modelDelta)}</span>` : '') +
-        (item.allowed === false ? `<span class="za-score-skip" title="${item.titleNegativeHit ? '岗位名含负面词：' + escapeHtml((item.titleNegativeMatches || []).join('、')) : '将跳过此岗位'}">${item.titleNegativeHit ? '负面词' : '跳过'}</span>` : '') +
+        (item.allowed === false ? `<span class="za-score-skip" title="${escapeHtml(describeScoreRejection(item))}">${item.titleNegativeHit ? '负面词' : '跳过'}</span>` : '') +
         `</div>`
       )).join('');
     },
@@ -14743,6 +14767,11 @@
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      #zhipin-auto-greeting-root .za-record-reason {
+        flex: 0 1 auto;
+        color: var(--za-danger);
+        font-weight: 600;
       }
       #zhipin-auto-greeting-root .za-record-empty {
         padding: 20px 10px;

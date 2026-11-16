@@ -459,6 +459,8 @@
       // 评分结果挂到 job 上：后续 clicked/sent 落库时一并写入，导出可复盘分数与理由。
       job.scoreResult = {
         score: scoreResult.score,
+        posScore: scoreResult.posScore,
+        negDeduction: scoreResult.negDeduction,
         grade: scoreResult.grade,
         allowed: scoreResult.allowed,
         reasons: (scoreResult.reasons || []).slice(0, 20),
@@ -1831,6 +1833,8 @@
             经营范围: row.businessScope || '',
             消息预览: row.messagePreview || '',
             评分: row.scoreResult ? Number(row.scoreResult.score) : '',
+            正面分: row.scoreResult ? Number(row.scoreResult.posScore || 0) : '',
+            负面扣分: row.scoreResult ? Number(row.scoreResult.negDeduction || 0) : '',
             评分等级: row.scoreResult ? String(row.scoreResult.grade || '') : '',
             评分理由: row.scoreResult ? (row.scoreResult.reasons || []).join('；') : '',
             拒绝原因: row.scoreRejectReason || '',
