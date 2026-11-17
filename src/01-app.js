@@ -43,6 +43,9 @@
     isJobListPage(url) { return false; }
     isChatPage(url) { return false; }
     isAllowedDisplayPage(url) { return false; }
+    // 面板显隐判断：默认与"允许显示页面"一致，子类可覆盖以在特定页面隐藏面板。
+    // 与 isAllowedDisplayPage 分开，是因为有些页面（如 BOSS 消息界面）脚本仍需运行，只是不显示面板。
+    isPanelDisplayPage(url) { return this.isAllowedDisplayPage(url); }
 
     // DOM 选择器（子类必须实现）
     get selectors() {
@@ -119,6 +122,17 @@
         const pathname = u.pathname.replace(/\/+$/, '');
         if (pathname === '/' || pathname === '/web/geek/chat') return true;
         return this.isJobListPage(u.href);
+      } catch { return false; }
+    }
+
+    // 消息界面（/web/geek/chat）不显示助手面板：脚本仍在后台跑完发消息与返回列表，
+    // 只是不再在右侧挂"BOSS直聘助手"标签；回到岗位列表页自动恢复显示。
+    isPanelDisplayPage(url) {
+      try {
+        const u = new URL(url || location.href, location.href);
+        if (u.origin !== 'https://www.zhipin.com') return false;
+        if (this.isChatPage(u.href)) return false;
+        return this.isAllowedDisplayPage(u.href);
       } catch { return false; }
     }
 

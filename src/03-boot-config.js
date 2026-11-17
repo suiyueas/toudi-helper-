@@ -8,7 +8,7 @@
     }
 
     if (runtime.ui) {
-      setUiDisplayEnabled(isAllowedDisplayPage());
+      setUiDisplayEnabled(isPanelDisplayPage());
       return;
     }
     if (!isAllowedDisplayPage()) return;
@@ -32,7 +32,8 @@
       }
       Database.open().catch((error) => console.warn('[ZhipinAuto] IndexedDB 初始化失败', error));
       UI.mount();
-      setUiDisplayEnabled(true);
+      // 挂载后按面板显示规则决定是否露出；BOSS 消息界面挂载但保持隐藏（自动化仍可用）。
+      setUiDisplayEnabled(isPanelDisplayPage());
       if (isJobListUrl(location.href) || isChatPage()) Automation.resumeIfNeeded('boot');
       if (isJobListUrl(location.href) && localStorage.getItem(APP.startJobsKey) === '1') {
         localStorage.removeItem(APP.startJobsKey);
@@ -230,6 +231,20 @@
     return false;
   }
 
+  // 面板是否该显示：与"脚本能否运行"分开判断。
+  // BOSS 消息界面仍要跑脚本（发消息、返回列表），但不显示助手面板。
+  function isPanelDisplayPage(href) {
+    if (currentPlatform && typeof currentPlatform.isPanelDisplayPage === 'function') {
+      return currentPlatform.isPanelDisplayPage(href);
+    }
+    const detected = platformRegistry.detect(href || location.href);
+    if (detected && typeof detected.isPanelDisplayPage === 'function') {
+      currentPlatform = detected;
+      return detected.isPanelDisplayPage(href);
+    }
+    return isAllowedDisplayPage(href);
+  }
+
   // 岗位页采用前缀判断，兼容 BOSS 后续增加的 jobs 子路由、查询参数和 hash 路由。
   // 使用平台适配器进行页面检测
   function isJobListUrl(href) {
@@ -286,12 +301,12 @@
     runtime.ui.root.style.display = enabled ? '' : 'none';
   }
 
-  // 路由变化后的统一入口：允许页面挂载/恢复，不允许页面隐藏面板。
+  // 路由变化后的统一入口：脚本可运行的页面负责挂载/恢复，面板只在允许显示的页面露出。
   function syncAllowedPageUi() {
-    const allowed = isAllowedDisplayPage();
-    setUiDisplayEnabled(allowed);
-    if (allowed) bootWhenReady();
-    return allowed;
+    const runnable = isAllowedDisplayPage();
+    setUiDisplayEnabled(isPanelDisplayPage());
+    if (runnable) bootWhenReady();
+    return runnable;
   }
 
   // BOSS 页面是 SPA，岗位列表和聊天页切换时不一定重新加载脚本，所以要监听 history 路由变化。
