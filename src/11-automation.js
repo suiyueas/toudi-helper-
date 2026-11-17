@@ -191,6 +191,14 @@
           return;
         }
 
+        // 手动切到了消息界面等非列表页：不启动列表循环（否则取不到卡片会误判列表耗尽），
+        // 保持 active 等待，回到岗位列表页后由 syncAllowedPageUi 自动续跑。
+        if (!isJobListUrl(location.href)) {
+          UI.setStatus('已离开岗位列表，回到岗位列表页后自动继续投递', 'info');
+          logDebugEvent('delivery_paused_by_navigation', { reason: reason || 'resume', href: location.href });
+          return;
+        }
+
         this.runListLoop(reason);
       } catch (error) {
         runtime.automationLoopActive = false;
@@ -209,6 +217,14 @@
       UI.setStatus(`自动沟通运行中：${reason || 'list'}`, 'info');
 
       try {
+        // 手动停在非列表页（如 BOSS 消息界面）：保持 active 直接退出循环，
+        // 不走"列表耗尽"的刷新/停止逻辑，回到列表页后由路由监听自动续跑。
+        if (!isJobListUrl(location.href)) {
+          UI.setStatus('已离开岗位列表，回到岗位列表页后自动继续投递', 'info');
+          logDebugEvent('delivery_paused_by_navigation', { reason: reason || 'list', href: location.href });
+          return;
+        }
+
         // 列表页先等 DOM 卡片和接口数据都就绪，DOM 负责点击，接口数据负责准确记录岗位字段。
         const listCardSelector = currentPlatform?.selectors?.jobCard || 'li.job-card-box';
         await waitForElement(listCardSelector, getWaitTimeout(), '岗位列表');
@@ -218,6 +234,12 @@
         JobRepository.syncCards();
 
         while (!runtime.stopRequested) {
+          // 扫描中途手动切走（如打开消息界面）：挂起循环等待返回，避免把"取不到卡片"当成列表耗尽。
+          if (!isJobListUrl(location.href)) {
+            UI.setStatus('已离开岗位列表，回到岗位列表页后自动继续投递', 'info');
+            logDebugEvent('delivery_paused_by_navigation', { reason: 'list-loop', href: location.href });
+            return;
+          }
           const state = RunState.load();
           if (!state || !state.active) break;
 
@@ -252,6 +274,12 @@
           }
           if (processed === 'navigating') return;
           if (processed === 'done') {
+            // 扫描期间页面被手动切走会导致"取不到卡片"，这不是真的列表耗尽：挂起等待返回。
+            if (!isJobListUrl(location.href)) {
+              UI.setStatus('已离开岗位列表，回到岗位列表页后自动继续投递', 'info');
+              logDebugEvent('delivery_paused_by_navigation', { reason: 'list-exhausted-check', href: location.href });
+              return;
+            }
             // 当前虚拟列表扫完后可整页刷新续跑；达到刷新上限或关闭开关时才真正停止。
             const refreshed = await this.refreshListAfterExhausted();
             if (refreshed) return;

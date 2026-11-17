@@ -306,6 +306,15 @@
     const runnable = isAllowedDisplayPage();
     setUiDisplayEnabled(isPanelDisplayPage());
     if (runnable) bootWhenReady();
+    // 扫描因手动离开列表页挂起（active 仍在、循环已退出）：回到岗位列表页自动接上，
+    // 不用用户再点一次启动。
+    if (runnable && isJobListUrl(location.href)) {
+      const state = RunState.load();
+      if (state && state.active && state.phase === 'list'
+        && !runtime.automationLoopActive && !runtime.resumeInProgress) {
+        Automation.resumeIfNeeded('route-back-to-list');
+      }
+    }
     return runnable;
   }
 
