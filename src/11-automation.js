@@ -473,6 +473,7 @@
         }),
         card,
       );
+      // 关键词判断属过程事件：实时日志默认不显示（跳过/通过事件已带分数与命中词），调试日志开启时仍完整记录。
       logDebugEvent('delivery_match_score', {
         scanKey,
         jobName: job.jobName || '',

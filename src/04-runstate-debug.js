@@ -81,11 +81,36 @@
     _debugFlushTimer = setTimeout(flushDebugEvents, DEBUG_FLUSH_DELAY_MS);
   }
 
+  // 过程级（trace）事件：一次岗位分析会连带十几条（扫描、接口抓取、详情等待、中间判断……），
+  // 默认不进实时日志，避免日志页和侧栏未读徽标很快刷成 99+。
+  // 结果级事件（跳过/通过/发送成功/警告/错误）不受影响；打开「记录」调试日志开关后过程事件也进日志页。
+  const TRACE_LOG_PREFIXES = ['job_detail_', 'job_list_', 'saved_records_', 'score_', 'zhilian_apply_button_'];
+  const TRACE_LOG_TYPES = new Set([
+    'process_card',
+    'delivery_match_candidate',
+    'delivery_match_score',
+    'delivery_city_match',
+    'delivery_salary_match',
+    'chat_button_found',
+    'chat_page_transition_observed',
+    'ignored_config_autofill_event',
+  ]);
+  function isTraceLogEvent(type, level) {
+    const key = String(type || '');
+    // 警告/错误始终保留，排查问题不能丢。
+    if (level === 'warn' || level === 'error') return false;
+    if (/error|failed|timeout|missing/i.test(key)) return false;
+    // 剩下的按前缀/白名单判定为纯过程事件（接口抓取、详情等待、中间判断……）。
+    if (TRACE_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
+    return TRACE_LOG_TYPES.has(key);
+  }
+
   // 统一写调试事件；默认关闭，开启后才写内存/localStorage/控制台。
   function logDebugEvent(type, data, level) {
-    // 实时日志始终记录（不受「调试日志」开关限制），用于替代被反调试禁用的 DevTools。
+    // 实时日志记录结果级事件（不受「调试日志」开关限制），用于替代被反调试禁用的 DevTools；
+    // 过程 trace 事件只有打开调试日志开关时才进实时日志。
     try {
-      LogWindow.append(type, data, level);
+      if (!isTraceLogEvent(type, level) || isDebugEnabled()) LogWindow.append(type, data, level);
     } catch (_) {}
     try {
       if (!isDebugEnabled()) return;
