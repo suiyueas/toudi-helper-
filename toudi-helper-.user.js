@@ -706,7 +706,9 @@
       // 但 paused 现场保留（已处理岗位、列表位置、暂停原因），用户手动启动时可从暂停处继续。
       if (isDocumentReload()) {
         const stale = RunState.load();
-        const keepPaused = stale && stale.phase === 'paused';
+        // 手动停止的现场同样保留：刷新后重新启动可从停止处续扫。
+        const keepPaused = stale && (stale.phase === 'paused'
+          || (stale.phase === 'stopped' && stale.stopResumable === true));
         RunState.clear();
         if (keepPaused) {
           RunState.save(Object.assign({}, stale, {
@@ -1158,7 +1160,9 @@
       return this.save(nextState);
     },
     // 停止自动化并保留停止原因，便于刷新后不再恢复。
-    stop(reason) {
+    // resumable=true（手动点"停止"）时保留扫描现场：processedKeys、列表位置、筛选签名都不动，
+    // 重新启动可从停止处续扫；自动停止（达到上限/列表耗尽/异常）保持原行为，重启从头扫。
+    stop(reason, options) {
       const state = this.save({
         active: false,
         phase: 'stopped',
@@ -1167,6 +1171,7 @@
         nextRunAt: null,
         nextDelaySeconds: null,
         stopReason: reason || '已停止',
+        stopResumable: Boolean(options && options.resumable),
       });
       return state;
     },
@@ -6602,10 +6607,13 @@
       this.runListLoop(resumePlan ? `resume：从暂停处继续（已处理 ${resumePlan.processedKeys.length} 个岗位）` : 'start');
     },
 
-    // 暂停现场能否续扫：仅限同一筛选列表的 paused 状态，且确实扫过岗位。
-    // 不满足任一条件返回 null，start() 保持原来的“回顶部从头扫”行为。
+    // 暂停/手动停止现场能否续扫：同一筛选列表的 paused 状态，或手动点"停止"保留的 stopped 现场，
+    // 且确实扫过岗位。不满足任一条件返回 null，start() 保持原来的"回顶部从头扫"行为。
     buildPausedResumePlan(previous, currentListUrl) {
-      if (!previous || previous.phase !== 'paused') return null;
+      if (!previous) return null;
+      const resumablePhase = previous.phase === 'paused'
+        || (previous.phase === 'stopped' && previous.stopResumable === true);
+      if (!resumablePhase) return null;
       if (!Array.isArray(previous.processedKeys) || !previous.processedKeys.length) return null;
       if (!previous.listUrl || !isSameJobListFilterContext(currentListUrl, previous.listUrl, previous.listFilterSignature)) return null;
 
@@ -6626,7 +6634,7 @@
         // 刷新续跑次数跨暂停累计，避免每暂停一次就把刷新额度重置。
         listRefreshCount: Number(previous.listRefreshCount || 0),
         resumedFromPause: true,
-        pauseReason: String(previous.pauseReason || '已暂停'),
+        pauseReason: String(previous.pauseReason || previous.stopReason || '已暂停'),
       };
     },
 
@@ -6634,7 +6642,8 @@
     stop(reason, options) {
       runtime.stopRequested = true;
       runtime.automationLoopActive = false;
-      RunState.stop(reason || '已停止');
+      // 手动停止等价于暂停现场：保留已处理岗位与列表位置，下次启动从停止处继续。
+      RunState.stop(reason || '已停止', { resumable: Boolean(options && options.manual) });
       UI.setRunning(false);
       // 停止后按数据库真实记录回填一次，避免运行中漏掉的 upsert 让列表停在旧状态。
       UI.refreshGreetedList({ scrollTop: true });

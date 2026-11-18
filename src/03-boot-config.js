@@ -19,7 +19,9 @@
       // 但 paused 现场保留（已处理岗位、列表位置、暂停原因），用户手动启动时可从暂停处继续。
       if (isDocumentReload()) {
         const stale = RunState.load();
-        const keepPaused = stale && stale.phase === 'paused';
+        // 手动停止的现场同样保留：刷新后重新启动可从停止处续扫。
+        const keepPaused = stale && (stale.phase === 'paused'
+          || (stale.phase === 'stopped' && stale.stopResumable === true));
         RunState.clear();
         if (keepPaused) {
           RunState.save(Object.assign({}, stale, {

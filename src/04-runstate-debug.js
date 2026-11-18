@@ -33,7 +33,9 @@
       return this.save(nextState);
     },
     // 停止自动化并保留停止原因，便于刷新后不再恢复。
-    stop(reason) {
+    // resumable=true（手动点"停止"）时保留扫描现场：processedKeys、列表位置、筛选签名都不动，
+    // 重新启动可从停止处续扫；自动停止（达到上限/列表耗尽/异常）保持原行为，重启从头扫。
+    stop(reason, options) {
       const state = this.save({
         active: false,
         phase: 'stopped',
@@ -42,6 +44,7 @@
         nextRunAt: null,
         nextDelaySeconds: null,
         stopReason: reason || '已停止',
+        stopResumable: Boolean(options && options.resumable),
       });
       return state;
     },
