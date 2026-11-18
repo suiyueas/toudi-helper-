@@ -1211,28 +1211,44 @@
     _debugFlushTimer = setTimeout(flushDebugEvents, DEBUG_FLUSH_DELAY_MS);
   }
 
-  // 过程级（trace）事件：一次岗位分析会连带十几条（扫描、接口抓取、详情等待、中间判断……），
-  // 默认不进实时日志，避免日志页和侧栏未读徽标很快刷成 99+。
-  // 结果级事件（跳过/通过/发送成功/警告/错误）不受影响；打开「记录」调试日志开关后过程事件也进日志页。
-  const TRACE_LOG_PREFIXES = ['job_detail_', 'job_list_', 'saved_records_', 'score_', 'zhilian_apply_button_'];
-  const TRACE_LOG_TYPES = new Set([
-    'process_card',
-    'delivery_match_candidate',
-    'delivery_match_score',
-    'delivery_city_match',
-    'delivery_salary_match',
-    'chat_button_found',
-    'chat_page_transition_observed',
-    'ignored_config_autofill_event',
+  // 结论白名单：实时日志只放行这些"结果级"事件（一个岗位通常只留 2 条：岗位通过/跳过 + 问候发送成功）。
+  // 其余一律视为过程事件（扫描、接口抓取、进聊天页、按钮探测、切换等待……）默认不进日志；
+  // 打开「记录」调试日志开关后过程事件也进日志页。warn/error 级别与名字含 error/failed/timeout/missing 的事件不受名单限制。
+  const RESULT_LOG_PREFIXES = ['skip_', 'boss_apply_'];
+  const RESULT_LOG_TYPES = new Set([
+    'delivery_match_accepted',
+    'delivery_match_rejected',
+    'delivery_message_sent',
+    'delivery_send_failed',
+    'delivery_builtin_greeting_completed',
+    'delivery_card_failed_continue',
+    'delivery_scan_step_failed_continue',
+    'delivery_chat_button_missing',
+    'delivery_stay_page_dialog',
+    'delivery_consecutive_failures',
+    'delivery_paused_by_navigation',
+    'scan_resume_from_pause',
+    'list_exhausted_refresh',
+    'list_exhausted_refresh_limit',
+    'complete_return_start',
+    'complete_return_list_visible',
+    'zhilian_apply_done',
+    'zhilian_apply_unconfirmed',
+    'boss_platform_dialog_hard_limit',
+    'invalid_company_blacklist_rule',
+    'model_circuit_open',
+    'model_test_ok',
+    'debug_logging_enabled',
+    'clear_applied_companies',
   ]);
   function isTraceLogEvent(type, level) {
     const key = String(type || '');
     // 警告/错误始终保留，排查问题不能丢。
     if (level === 'warn' || level === 'error') return false;
     if (/error|failed|timeout|missing/i.test(key)) return false;
-    // 剩下的按前缀/白名单判定为纯过程事件（接口抓取、详情等待、中间判断……）。
-    if (TRACE_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
-    return TRACE_LOG_TYPES.has(key);
+    if (RESULT_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return false;
+    if (RESULT_LOG_TYPES.has(key)) return false;
+    return true;
   }
 
   // 统一写调试事件；默认关闭，开启后才写内存/localStorage/控制台。
@@ -3517,7 +3533,8 @@
     formatButton: null,
     records: [],
     formatMode: 'human',
-    formatModeKey: '__zhipin_log_format_mode_v2__',
+    // v3：重置一次格式偏好，把旧版本误存的"机器格式"拉回中文人易读格式。
+    formatModeKey: '__zhipin_log_format_mode_v3__',
     // 页面筛选只影响显示和复制，不改变已采集的记录。
     filter: { level: '', keyword: '', autoScroll: true },
     summaryEls: null,
@@ -3996,10 +4013,40 @@
         delivery_random_switch_delay: '岗位切换等待',
         delivery_card_failed_continue: '岗位处理异常',
         delivery_scan_step_failed_continue: '扫描异常',
+        delivery_builtin_greeting_completed: '内置问候已发送',
+        delivery_consecutive_failures: '连续发送失败',
+        delivery_paused_by_navigation: '离开列表已暂停',
+        scan_resume_from_pause: '从暂停处继续',
+        list_exhausted_refresh: '列表扫完自动刷新',
+        list_exhausted_refresh_limit: '刷新达上限已停止',
+        complete_return_start: '返回岗位列表',
+        complete_return_list_visible: '岗位列表已可见',
+        skip_company_blacklist: '企业黑名单跳过',
+        skip_boss_active_filter: 'BOSS活跃度筛选跳过',
+        zhilian_apply_start: '智联开始投递',
+        zhilian_apply_done: '智联投递完成',
+        zhilian_apply_button_found: '智联投递按钮已找到',
+        zhilian_apply_button_clicked: '智联点击投递按钮',
+        zhilian_greeting_injected: '智联招呼语已填入',
+        zhilian_dialog_dismissed: '智联弹窗已关闭',
+        zhilian_login_required: '智联登录失效',
+        communicate_start: '进入聊天页',
+        chat_button_clicked: '点击沟通按钮',
+        wait_chat_ready_success: '聊天输入框就绪',
+        continue_from_chat: '从聊天页返回继续',
+        debug_logging_enabled: '已开启调试日志',
+        clear_applied_companies: '已清空已投递公司',
+        invalid_company_blacklist_rule: '黑名单规则无效',
       };
-      const visibleTypes = new Set(Object.keys(labels));
-      if (!visibleTypes.has(String(type))) return '';
-      const title = labels[type] || String(type || '日志').replace(/^(delivery|score)_/, '').replace(/_/g, ' ');
+      // 未登记的类型兜底：按前缀翻成中文标题，避免日志里出现英文原始事件名。
+      const title = labels[type] || String(type || '日志')
+        .replace(/^delivery_/, '投递 ')
+        .replace(/^zhilian_/, '智联 ')
+        .replace(/^boss_/, 'BOSS ')
+        .replace(/^chat_/, '聊天 ')
+        .replace(/^job_(detail|list)_/, '岗位数据 ')
+        .replace(/^skip_/, '跳过 ')
+        .replace(/_/g, ' ');
       const source = data && typeof data === 'object' ? data : {};
       const job = source.job || source.pendingJob || {};
       const fields = [];

@@ -84,28 +84,44 @@
     _debugFlushTimer = setTimeout(flushDebugEvents, DEBUG_FLUSH_DELAY_MS);
   }
 
-  // 过程级（trace）事件：一次岗位分析会连带十几条（扫描、接口抓取、详情等待、中间判断……），
-  // 默认不进实时日志，避免日志页和侧栏未读徽标很快刷成 99+。
-  // 结果级事件（跳过/通过/发送成功/警告/错误）不受影响；打开「记录」调试日志开关后过程事件也进日志页。
-  const TRACE_LOG_PREFIXES = ['job_detail_', 'job_list_', 'saved_records_', 'score_', 'zhilian_apply_button_'];
-  const TRACE_LOG_TYPES = new Set([
-    'process_card',
-    'delivery_match_candidate',
-    'delivery_match_score',
-    'delivery_city_match',
-    'delivery_salary_match',
-    'chat_button_found',
-    'chat_page_transition_observed',
-    'ignored_config_autofill_event',
+  // 结论白名单：实时日志只放行这些"结果级"事件（一个岗位通常只留 2 条：岗位通过/跳过 + 问候发送成功）。
+  // 其余一律视为过程事件（扫描、接口抓取、进聊天页、按钮探测、切换等待……）默认不进日志；
+  // 打开「记录」调试日志开关后过程事件也进日志页。warn/error 级别与名字含 error/failed/timeout/missing 的事件不受名单限制。
+  const RESULT_LOG_PREFIXES = ['skip_', 'boss_apply_'];
+  const RESULT_LOG_TYPES = new Set([
+    'delivery_match_accepted',
+    'delivery_match_rejected',
+    'delivery_message_sent',
+    'delivery_send_failed',
+    'delivery_builtin_greeting_completed',
+    'delivery_card_failed_continue',
+    'delivery_scan_step_failed_continue',
+    'delivery_chat_button_missing',
+    'delivery_stay_page_dialog',
+    'delivery_consecutive_failures',
+    'delivery_paused_by_navigation',
+    'scan_resume_from_pause',
+    'list_exhausted_refresh',
+    'list_exhausted_refresh_limit',
+    'complete_return_start',
+    'complete_return_list_visible',
+    'zhilian_apply_done',
+    'zhilian_apply_unconfirmed',
+    'boss_platform_dialog_hard_limit',
+    'invalid_company_blacklist_rule',
+    'model_circuit_open',
+    'model_test_ok',
+    'debug_logging_enabled',
+    'clear_applied_companies',
   ]);
   function isTraceLogEvent(type, level) {
     const key = String(type || '');
     // 警告/错误始终保留，排查问题不能丢。
     if (level === 'warn' || level === 'error') return false;
     if (/error|failed|timeout|missing/i.test(key)) return false;
-    // 剩下的按前缀/白名单判定为纯过程事件（接口抓取、详情等待、中间判断……）。
-    if (TRACE_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
-    return TRACE_LOG_TYPES.has(key);
+    if (RESULT_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return false;
+    if (RESULT_LOG_TYPES.has(key)) return false;
+    return true;
   }
 
   // 统一写调试事件；默认关闭，开启后才写内存/localStorage/控制台。

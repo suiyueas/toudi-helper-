@@ -6,7 +6,8 @@
     formatButton: null,
     records: [],
     formatMode: 'human',
-    formatModeKey: '__zhipin_log_format_mode_v2__',
+    // v3：重置一次格式偏好，把旧版本误存的"机器格式"拉回中文人易读格式。
+    formatModeKey: '__zhipin_log_format_mode_v3__',
     // 页面筛选只影响显示和复制，不改变已采集的记录。
     filter: { level: '', keyword: '', autoScroll: true },
     summaryEls: null,
@@ -485,10 +486,40 @@
         delivery_random_switch_delay: '岗位切换等待',
         delivery_card_failed_continue: '岗位处理异常',
         delivery_scan_step_failed_continue: '扫描异常',
+        delivery_builtin_greeting_completed: '内置问候已发送',
+        delivery_consecutive_failures: '连续发送失败',
+        delivery_paused_by_navigation: '离开列表已暂停',
+        scan_resume_from_pause: '从暂停处继续',
+        list_exhausted_refresh: '列表扫完自动刷新',
+        list_exhausted_refresh_limit: '刷新达上限已停止',
+        complete_return_start: '返回岗位列表',
+        complete_return_list_visible: '岗位列表已可见',
+        skip_company_blacklist: '企业黑名单跳过',
+        skip_boss_active_filter: 'BOSS活跃度筛选跳过',
+        zhilian_apply_start: '智联开始投递',
+        zhilian_apply_done: '智联投递完成',
+        zhilian_apply_button_found: '智联投递按钮已找到',
+        zhilian_apply_button_clicked: '智联点击投递按钮',
+        zhilian_greeting_injected: '智联招呼语已填入',
+        zhilian_dialog_dismissed: '智联弹窗已关闭',
+        zhilian_login_required: '智联登录失效',
+        communicate_start: '进入聊天页',
+        chat_button_clicked: '点击沟通按钮',
+        wait_chat_ready_success: '聊天输入框就绪',
+        continue_from_chat: '从聊天页返回继续',
+        debug_logging_enabled: '已开启调试日志',
+        clear_applied_companies: '已清空已投递公司',
+        invalid_company_blacklist_rule: '黑名单规则无效',
       };
-      const visibleTypes = new Set(Object.keys(labels));
-      if (!visibleTypes.has(String(type))) return '';
-      const title = labels[type] || String(type || '日志').replace(/^(delivery|score)_/, '').replace(/_/g, ' ');
+      // 未登记的类型兜底：按前缀翻成中文标题，避免日志里出现英文原始事件名。
+      const title = labels[type] || String(type || '日志')
+        .replace(/^delivery_/, '投递 ')
+        .replace(/^zhilian_/, '智联 ')
+        .replace(/^boss_/, 'BOSS ')
+        .replace(/^chat_/, '聊天 ')
+        .replace(/^job_(detail|list)_/, '岗位数据 ')
+        .replace(/^skip_/, '跳过 ')
+        .replace(/_/g, ' ');
       const source = data && typeof data === 'object' ? data : {};
       const job = source.job || source.pendingJob || {};
       const fields = [];
