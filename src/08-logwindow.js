@@ -210,7 +210,9 @@
       const statusClass = /failed|error|missing|timeout/i.test(type) ? ' za-log-error'
         : /rejected|skip|not_match/i.test(type) ? ' za-log-skip'
           : /accepted|sent|completed|success/i.test(type) ? ' za-log-success' : '';
-      row.className = `za-log-line${statusClass}${record.level === 'warn' ? ' za-log-warn' : ''}`;
+      // 跳过类事件按"跳过"样式渲染，不再叠加警告色（存储级别沿用 warn 不影响显示分类）。
+      const warnClass = record.level === 'warn' && !statusClass.includes('za-log-skip') ? ' za-log-warn' : '';
+      row.className = `za-log-line${statusClass}${warnClass}`;
       row.textContent = line;
       return row;
     },
@@ -358,9 +360,11 @@
     matchesFilter(record) {
       const level = this.filter.level;
       const type = String(record && record.type || '');
-      const isError = Boolean(record && (record.level === 'error'
-        || /failed|error|timeout|missing|hidden|rejected/i.test(type)));
-      const isWarn = Boolean(record && record.level === 'warn' && !isError);
+      // 岗位跳过/黑名单跳过是正常结论，不算错误也不算警告（类型名里的 rejected 不能当错误）。
+      const isSkip = Boolean(record && /^(?:delivery_match_rejected|skip_)/.test(type));
+      const isError = Boolean(!isSkip && record && (record.level === 'error'
+        || /failed|error|timeout|missing|hidden/i.test(type)));
+      const isWarn = Boolean(!isSkip && record && record.level === 'warn' && !isError);
       if (level === 'error' && !isError) return false;
       if (level === 'warn' && !isWarn) return false;
       if (level === 'info' && (isError || isWarn)) return false;
@@ -548,7 +552,7 @@
       add('错误', source.error || source.message);
       add('次数', source.count === undefined ? undefined : String(source.count));
       add('内容', source.messagePreview);
-      const body = fields.length ? fields.join(' | ') : '已记录';
+      const body = fields.join(' | ');
       return `[${time}] ${title}${body ? `：${body}` : ''}`;
     },
   };
