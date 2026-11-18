@@ -1213,7 +1213,14 @@
 
   // 结论白名单：实时日志只放行这些"结果级"事件（一个岗位通常只留 2 条：岗位通过/跳过 + 问候发送成功）。
   // 其余一律视为过程事件（扫描、接口抓取、进聊天页、按钮探测、切换等待……）默认不进日志；
-  // 打开「记录」调试日志开关后过程事件也进日志页。warn/error 级别与名字含 error/failed/timeout/missing 的事件不受名单限制。
+  // 打开「记录」调试日志开关后过程事件也进日志页。
+  // 过程前缀优先于级别判断：这些前缀下多为可重试的瞬时告警（如"卡片同步不完整""详情接口空返回"），
+  // 反复刷屏但不影响投递结论，真正的投递失败会以结果事件冒出来。
+  const TRACE_LOG_PREFIXES = [
+    'job_detail_', 'job_list_', 'saved_records_', 'score_',
+    'sync_cards_', 'job_expectation_', 'chat_page_transition',
+    'zhilian_detail_', 'zhilian_greeting_inject_error', 'zhilian_greeting_resolve_failed',
+  ];
   const RESULT_LOG_PREFIXES = ['skip_', 'boss_apply_'];
   const RESULT_LOG_TYPES = new Set([
     'delivery_match_accepted',
@@ -1243,7 +1250,9 @@
   ]);
   function isTraceLogEvent(type, level) {
     const key = String(type || '');
-    // 警告/错误始终保留，排查问题不能丢。
+    // 过程前缀先判：即使 warn/error 也过滤（瞬时重试告警，不构成投递结论）。
+    if (TRACE_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
+    // 其余警告/错误始终保留，排查问题不能丢。
     if (level === 'warn' || level === 'error') return false;
     if (/error|failed|timeout|missing/i.test(key)) return false;
     if (RESULT_LOG_PREFIXES.some((prefix) => key.startsWith(prefix))) return false;
@@ -4037,6 +4046,9 @@
         debug_logging_enabled: '已开启调试日志',
         clear_applied_companies: '已清空已投递公司',
         invalid_company_blacklist_rule: '黑名单规则无效',
+        boss_platform_dialog_hard_limit: 'BOSS沟通次数达上限',
+        model_circuit_open: 'AI评分连续失败已降级为本地评分',
+        model_test_ok: 'AI评分测试通过',
       };
       // 未登记的类型兜底：按前缀翻成中文标题，避免日志里出现英文原始事件名。
       const title = labels[type] || String(type || '日志')
@@ -4070,6 +4082,7 @@
       add('状态', source.status);
       add('等待', source.delaySeconds === undefined ? undefined : `${source.delaySeconds}秒`);
       add('错误', source.error || source.message);
+      add('次数', source.count === undefined ? undefined : String(source.count));
       add('内容', source.messagePreview);
       const body = fields.length ? fields.join(' | ') : '已记录';
       return `[${time}] ${title}${body ? `：${body}` : ''}`;
@@ -4562,7 +4575,7 @@
                     </div>
                   </div>
 
-                  <p class="za-hint">实时日志只在投递运行期间记录，每次启动会清空上一轮并最多保留 500 条；平时浏览岗位不产生日志。默认只记结果事件（每个岗位的通过/跳过、发送成功、警告与错误），扫描、接口抓取、关键词判断等过程事件不刷屏；需要逐条过程排查时打开「记录」调试日志开关即可一并显示。打开「记录」后事件才会保存到本机并支持导出，不会上传。级别和关键词筛选只影响当前显示与复制，不会删除记录。</p>
+                  <p class="za-hint">实时日志只在投递运行期间记录，每次启动会清空上一轮并最多保留 500 条；平时浏览岗位不产生日志。默认只记结论事件（每个岗位的通过/跳过、问候发送成功、暂停与续扫、真正的失败），扫描、接口抓取、卡片同步、关键词判断等过程事件及其瞬时重试告警不刷屏；需要逐条过程排查时打开「记录」调试日志开关即可一并显示。打开「记录」后事件才会保存到本机并支持导出，不会上传。级别和关键词筛选只影响当前显示与复制，不会删除记录。</p>
                 </section>
               </div>
             </div>

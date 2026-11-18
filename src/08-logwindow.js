@@ -510,6 +510,9 @@
         debug_logging_enabled: '已开启调试日志',
         clear_applied_companies: '已清空已投递公司',
         invalid_company_blacklist_rule: '黑名单规则无效',
+        boss_platform_dialog_hard_limit: 'BOSS沟通次数达上限',
+        model_circuit_open: 'AI评分连续失败已降级为本地评分',
+        model_test_ok: 'AI评分测试通过',
       };
       // 未登记的类型兜底：按前缀翻成中文标题，避免日志里出现英文原始事件名。
       const title = labels[type] || String(type || '日志')
@@ -543,6 +546,7 @@
       add('状态', source.status);
       add('等待', source.delaySeconds === undefined ? undefined : `${source.delaySeconds}秒`);
       add('错误', source.error || source.message);
+      add('次数', source.count === undefined ? undefined : String(source.count));
       add('内容', source.messagePreview);
       const body = fields.length ? fields.join(' | ') : '已记录';
       return `[${time}] ${title}${body ? `：${body}` : ''}`;
