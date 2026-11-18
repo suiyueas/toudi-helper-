@@ -4340,6 +4340,10 @@
                     <span class="za-muted-text" data-role="appliedCompanyCount"></span>
                     <button type="button" class="za-danger-soft" data-action="clearAppliedCompanies">清空名单</button>
                   </div>
+                  <div class="za-company-match">
+                    <input type="search" data-role="companyMatchSearch" placeholder="公司匹配：输入公司名，查这家投递过没有" autocomplete="off" spellcheck="false">
+                    <div class="za-company-match-result" data-role="companyMatchResult" hidden></div>
+                  </div>
                   <p class="za-hint">独立持久化，清理投递记录不会清除本名单。投递/沟通成功后自动记录公司名；想重新投某公司时点「清空名单」。</p>
                 </section>
 
@@ -4648,6 +4652,8 @@
         logToggle: root.querySelector('[data-role="logToggle"]'),
         recordSearch: root.querySelector('[data-role="recordSearch"]'),
         recordStatus: root.querySelector('[data-role="recordStatus"]'),
+        companyMatchSearch: root.querySelector('[data-role="companyMatchSearch"]'),
+        companyMatchResult: root.querySelector('[data-role="companyMatchResult"]'),
         recordList: root.querySelector('[data-role="recordList"]'),
         recordListMeta: root.querySelector('[data-role="recordListMeta"]'),
         dataStatToday: root.querySelector('[data-role="dataStatToday"]'),
@@ -4847,6 +4853,10 @@
         }
         if (inputRole === 'recordSearch') {
           this.renderRecordList(runtime.dataOverviewRows || []);
+          return;
+        }
+        if (inputRole === 'companyMatchSearch') {
+          this.renderCompanyMatch();
           return;
         }
         if (inputRole === 'logSearch') {
@@ -6165,6 +6175,64 @@
         const label = index === days.length - 1 ? '今天' : `${item.date.getMonth() + 1}/${item.date.getDate()}`;
         return `<div class="za-trend-item"><span class="za-trend-count">${item.count || ''}</span><div class="za-trend-bar-wrap"><span class="za-trend-bar" data-zero="${item.count ? '0' : '1'}" style="height:${height}%"></span></div><span class="za-trend-day">${label}</span></div>`;
       }).join('');
+    },
+
+    // 公司匹配查询：输入公司名，同时查"已投递公司名单"和岗位记录，回答"这家公司投过没有"。
+    // 双向包含匹配（名单名 ⊇ 输入 或 输入 ⊇ 名单名），兼容全称/简称差异；只读展示，不改任何配置。
+    renderCompanyMatch() {
+      const ui = runtime.ui;
+      if (!ui || !ui.companyMatchResult) return;
+      const box = ui.companyMatchResult;
+      const query = String(ui.companyMatchSearch && ui.companyMatchSearch.value || '').trim();
+      if (!query) {
+        box.hidden = true;
+        box.innerHTML = '';
+        return;
+      }
+      // 首次查询时名单可能还没从历史记录补播种完成，等就绪后再渲染一次。
+      if (!runtime.appliedCompanyReady) {
+        box.hidden = false;
+        box.innerHTML = '<div class="za-record-empty">正在读取已投递名单…</div>';
+        AppliedCompanyIndex.ensureReady()
+          .then(() => this.renderCompanyMatch())
+          .catch(() => {});
+        return;
+      }
+      const q = query.toLowerCase();
+      const contains = (text) => {
+        const value = String(text || '').toLowerCase();
+        if (!value) return false;
+        return value.includes(q) || (value.length >= 2 && q.includes(value));
+      };
+      const hitNames = Array.from(runtime.appliedCompanySet).filter(contains);
+      const hitRows = (runtime.dataOverviewRows || []).filter((record) => {
+        if (!record || !shouldCountAppliedRecord(record)) return false;
+        return contains(record.company || record.companyFullName || record.companyShortName);
+      }).sort((left, right) => String(right.sentAt || right.updatedAt || right.clickedAt || '')
+        .localeCompare(String(left.sentAt || left.updatedAt || left.clickedAt || '')));
+
+      box.hidden = false;
+      if (!hitNames.length && !hitRows.length) {
+        box.innerHTML = `<div class="za-company-match-miss">未投递过：已投递名单（${runtime.appliedCompanySet.size} 家）和岗位记录里都没找到「${escapeHtml(query)}」</div>`;
+        return;
+      }
+      const parts = [];
+      parts.push(`<div class="za-company-match-hit">已投递过：「${escapeHtml(query)}」${hitNames.length ? `，名单命中 ${hitNames.length} 个公司名` : ''}</div>`);
+      if (hitNames.length) {
+        parts.push(`<div class="za-company-match-names">命中名单：${hitNames.slice(0, 8).map((name) => escapeHtml(String(name))).join('、')}${hitNames.length > 8 ? ' …' : ''}</div>`);
+      }
+      if (hitRows.length) {
+        const rowsHtml = hitRows.slice(0, 5).map((record) => {
+          const meta = getRecordStatusMeta(record);
+          const time = formatRelativeTime(record.sentAt || record.updatedAt || record.clickedAt || record.createdAt || '');
+          return `<div class="za-record-row"><div class="za-record-main"><span class="za-record-title">${escapeHtml(record.jobName || '未命名岗位')}</span><span class="${meta.cls}">${escapeHtml(meta.label)}</span></div><div class="za-record-meta"><span>${escapeHtml(record.company || '')}</span><span>${escapeHtml(time)}</span></div></div>`;
+        }).join('');
+        parts.push(`<div class="za-record-list">${rowsHtml}</div>`);
+        if (hitRows.length > 5) {
+          parts.push(`<div class="za-company-match-names">另有 ${hitRows.length - 5} 条投递记录，可在「最近记录」里搜索查看</div>`);
+        }
+      }
+      box.innerHTML = parts.join('');
     },
 
     // 最近记录：关键词 + 状态筛选，最多展示 30 条。
@@ -14945,6 +15013,41 @@
         text-align: center;
         font-size: 11px;
         color: var(--za-muted);
+      }
+
+      /* 公司匹配查询：输入公司名判断这家是否已投递过 */
+      #zhipin-auto-greeting-root .za-company-match {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      #zhipin-auto-greeting-root .za-company-match-result {
+        border: 1px solid var(--za-border);
+        border-radius: 9px;
+        background: var(--za-bg);
+        padding: 8px 10px;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--za-text);
+      }
+      #zhipin-auto-greeting-root .za-company-match-hit {
+        color: var(--za-danger);
+        font-weight: 600;
+      }
+      #zhipin-auto-greeting-root .za-company-match-miss {
+        color: #047857;
+        font-weight: 600;
+      }
+      #zhipin-auto-greeting-root .za-company-match-names {
+        margin-top: 4px;
+        color: var(--za-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #zhipin-auto-greeting-root .za-company-match-result .za-record-list {
+        margin-top: 6px;
+        max-height: 160px;
       }
 
       /* 日志页：本次运行摘要 */

@@ -5599,6 +5599,41 @@
         color: var(--za-muted);
       }
 
+      /* 公司匹配查询：输入公司名判断这家是否已投递过 */
+      #zhipin-auto-greeting-root .za-company-match {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      #zhipin-auto-greeting-root .za-company-match-result {
+        border: 1px solid var(--za-border);
+        border-radius: 9px;
+        background: var(--za-bg);
+        padding: 8px 10px;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--za-text);
+      }
+      #zhipin-auto-greeting-root .za-company-match-hit {
+        color: var(--za-danger);
+        font-weight: 600;
+      }
+      #zhipin-auto-greeting-root .za-company-match-miss {
+        color: #047857;
+        font-weight: 600;
+      }
+      #zhipin-auto-greeting-root .za-company-match-names {
+        margin-top: 4px;
+        color: var(--za-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #zhipin-auto-greeting-root .za-company-match-result .za-record-list {
+        margin-top: 6px;
+        max-height: 160px;
+      }
+
       /* 日志页：本次运行摘要 */
       #zhipin-auto-greeting-root .za-run-summary {
         padding: 10px 11px;
