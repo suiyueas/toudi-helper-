@@ -11,6 +11,9 @@
     startJobsKey: '__multi_platform_job_start_jobs__',
     // 已投递公司去重名单（独立于 jobRecords 持久化，清理记录不会清除）。
     appliedCompanyKey: '__multi_platform_job_applied_companies__',
+    // 手动补录的公司名子名单：网页/App 手动投递的公司名与岗位卡片上的全称/简称常不一致，
+    // 单独保留一份用于 has() 的双向包含模糊匹配。
+    appliedCompanyManualKey: '__multi_platform_job_applied_manual__',
     // 手动点过「清空名单」的标记；置位后不再从历史记录自动补播种（与"不可恢复"语义一致）。
     appliedCompanyClearedKey: '__multi_platform_job_applied_companies_cleared__',
     // 每日投递配额计数：{ date: 'YYYY-MM-DD', count: n }，跨运行累计、换天自动重置。

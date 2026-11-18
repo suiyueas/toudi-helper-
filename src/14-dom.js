@@ -5606,6 +5606,17 @@
         gap: 6px;
         margin-top: 8px;
       }
+      #zhipin-auto-greeting-root .za-company-match-bar {
+        display: flex;
+        gap: 6px;
+      }
+      #zhipin-auto-greeting-root .za-company-match-bar input[type="search"] {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      #zhipin-auto-greeting-root .za-company-match-bar button {
+        flex: 0 0 auto;
+      }
       #zhipin-auto-greeting-root .za-company-match-result {
         border: 1px solid var(--za-border);
         border-radius: 9px;

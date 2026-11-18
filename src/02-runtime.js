@@ -31,6 +31,8 @@
     contactedIndexReady: false,
     // 已投递公司名 Set：IndexedDB 里 resumeApplied 记录的投简历去重索引。
     appliedCompanySet: new Set(),
+    // 手动补录的公司名列表（数组）：并入 appliedCompanySet 供查询展示，同时单独保留做模糊匹配。
+    appliedCompanyManual: [],
     appliedCompanyReady: false,
     // 自动化运行锁和停止标记，避免重复启动多个并发循环。
     automationLoopActive: false,

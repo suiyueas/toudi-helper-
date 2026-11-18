@@ -443,6 +443,17 @@
           if (shouldCountAppliedRecord(record)) this.collect(record);
         });
       }
+      // 手动补录名单：并入主名单（供查询/计数展示），同时保留原名列表做模糊匹配。
+      runtime.appliedCompanyManual = [];
+      try {
+        const manual = JSON.parse(localStorage.getItem(APP.appliedCompanyManualKey) || '[]');
+        if (Array.isArray(manual)) manual.forEach((name) => {
+          const value = normalizeText(name);
+          if (!value || runtime.appliedCompanyManual.includes(value)) return;
+          runtime.appliedCompanyManual.push(value);
+          runtime.appliedCompanySet.add(value);
+        });
+      } catch (_) {}
       runtime.appliedCompanyReady = true;
       this.persist();
       return runtime.appliedCompanySet;
@@ -460,6 +471,17 @@
     add(record) {
       this.collect(record);
       this.persist();
+    },
+
+    // 手动补录：把网页/App 上手动投递过的公司名加进名单，并单独保留一份用于模糊匹配。
+    addManual(name) {
+      const value = normalizeText(name);
+      if (!value) return { added: false, size: this.size() };
+      const existed = runtime.appliedCompanySet.has(value);
+      this.collect({ company: value });
+      if (!runtime.appliedCompanyManual.includes(value)) runtime.appliedCompanyManual.push(value);
+      this.persist();
+      return { added: !existed, size: this.size(), name: value };
     },
 
     // 节流写入 localStorage：连续投递时 500ms 内的多次 add 合并成一次序列化+写盘，
@@ -480,6 +502,7 @@
       this._persistDirty = false;
       try {
         localStorage.setItem(APP.appliedCompanyKey, JSON.stringify(Array.from(runtime.appliedCompanySet)));
+        localStorage.setItem(APP.appliedCompanyManualKey, JSON.stringify(runtime.appliedCompanyManual));
       } catch (e) {
         logDebugEvent('applied_company_persist_failed', { error: String((e && e.message) || e) }, 'warn');
       }
@@ -489,7 +512,17 @@
     has(job) {
       if (!job) return false;
       const candidates = getCompanyMatchCandidates(job, job.company);
-      return candidates.some((name) => name && runtime.appliedCompanySet.has(name));
+      if (candidates.some((name) => name && runtime.appliedCompanySet.has(name))) return true;
+      // 手动补录的名字做双向包含匹配：手动录入名与岗位卡片的全称/简称经常不一致，精确匹配会漏。
+      if (!runtime.appliedCompanyManual.length) return false;
+      return candidates.some((candidate) => {
+        const left = String(candidate || '').toLowerCase();
+        if (left.length < 2) return false;
+        return runtime.appliedCompanyManual.some((name) => {
+          const right = String(name || '').toLowerCase();
+          return right.length >= 2 && (left.includes(right) || right.includes(left));
+        });
+      });
     },
 
     // 清空名单（面板手动触发）：置"已手动清空"标记，之后不再从历史记录自动回补。
@@ -501,7 +534,9 @@
       }
       this._persistDirty = false;
       runtime.appliedCompanySet.clear();
+      runtime.appliedCompanyManual = [];
       try { localStorage.removeItem(APP.appliedCompanyKey); } catch (_) {}
+      try { localStorage.removeItem(APP.appliedCompanyManualKey); } catch (_) {}
       try { localStorage.setItem(APP.appliedCompanyClearedKey, '1'); } catch (_) {}
       runtime.appliedCompanyReady = true;
     },

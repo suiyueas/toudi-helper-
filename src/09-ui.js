@@ -246,10 +246,13 @@
                     <button type="button" class="za-danger-soft" data-action="clearAppliedCompanies">清空名单</button>
                   </div>
                   <div class="za-company-match">
-                    <input type="search" data-role="companyMatchSearch" placeholder="公司匹配：输入公司名，查这家投递过没有" autocomplete="off" spellcheck="false">
+                    <div class="za-company-match-bar">
+                      <input type="search" data-role="companyMatchSearch" placeholder="公司匹配：输入公司名，查这家投递过没有" autocomplete="off" spellcheck="false">
+                      <button type="button" data-action="markCompanyApplied" title="网页/App 手动投递过的公司，输入公司名点这里补录进已投递名单">补录</button>
+                    </div>
                     <div class="za-company-match-result" data-role="companyMatchResult" hidden></div>
                   </div>
-                  <p class="za-hint">独立持久化，清理投递记录不会清除本名单。投递/沟通成功后自动记录公司名；想重新投某公司时点「清空名单」。</p>
+                  <p class="za-hint">独立持久化，清理投递记录不会清除本名单。投递/沟通成功后自动记录公司名；网页/App 上自己手动投过的公司，输入公司名点「补录」加进来（按模糊匹配跳过）；想重新投某公司时点「清空名单」。</p>
                 </section>
 
                 <section class="za-section" data-feature-section="bossActive">
@@ -735,6 +738,7 @@
         if (action === 'removeCompanyBlacklistRule') this.removeCompanyBlacklistRule(target.dataset.id);
         if (action === 'clearCompanyBlacklistRules') this.clearCompanyBlacklistRules();
         if (action === 'clearAppliedCompanies') this.clearAppliedCompanies();
+        if (action === 'markCompanyApplied') this.markCompanyApplied();
         if (action === 'addBossActiveOption') this.addBossActiveCustomOption();
         if (action === 'deleteBossActiveOption') this.deleteBossActiveCustomOption(target.dataset.value);
         if (action === 'removeBossActiveSelection') this.removeBossActiveSelection(target.dataset.value);
@@ -1838,6 +1842,30 @@
       logDebugEvent('clear_applied_companies', { count, at: nowIso() }, 'info');
     },
 
+    // 手动补录已投递公司：把网页/App 上自己投过的公司名加进去重名单，
+    // 让"公司匹配"查得到、自动投递也会跳过（手动名单走双向包含模糊匹配）。
+    async markCompanyApplied() {
+      const ui = runtime.ui;
+      if (!ui || !ui.companyMatchSearch) return;
+      const query = String(ui.companyMatchSearch.value || '').trim();
+      if (!query) {
+        UI.setStatus('请先在公司匹配输入框里输入要补录的公司名', 'warn');
+        return;
+      }
+      try {
+        await AppliedCompanyIndex.ensureReady();
+        const result = AppliedCompanyIndex.addManual(query);
+        await this.updateAppliedCompanyCount();
+        this.renderCompanyMatch();
+        UI.setStatus(result.added
+          ? `已补录「${query}」，当前名单 ${result.size} 家公司`
+          : `「${query}」已在名单中（共 ${result.size} 家），无需重复补录`, result.added ? 'ok' : 'warn');
+        logDebugEvent('applied_company_manual_added', { company: query, size: result.size, added: result.added }, 'info');
+      } catch (error) {
+        UI.setStatus(`补录失败：${(error && error.message) || error}`, 'error');
+      }
+    },
+
     // 渲染 Boss 活跃度下拉多选、已选标签和自定义选项标签。
     renderBossActiveFilterOptions() {
       if (!runtime.ui || !runtime.ui.bossActiveOptionMenu) return;
@@ -2124,7 +2152,11 @@
       const parts = [];
       parts.push(`<div class="za-company-match-hit">已投递过：「${escapeHtml(query)}」${hitNames.length ? `，名单命中 ${hitNames.length} 个公司名` : ''}</div>`);
       if (hitNames.length) {
-        parts.push(`<div class="za-company-match-names">命中名单：${hitNames.slice(0, 8).map((name) => escapeHtml(String(name))).join('、')}${hitNames.length > 8 ? ' …' : ''}</div>`);
+        const manual = new Set(runtime.appliedCompanyManual);
+        const displayNames = hitNames.slice(0, 8)
+          .map((name) => `${escapeHtml(String(name))}${manual.has(name) ? '（手动补录）' : ''}`)
+          .join('、');
+        parts.push(`<div class="za-company-match-names">命中名单：${displayNames}${hitNames.length > 8 ? ' …' : ''}</div>`);
       }
       if (hitRows.length) {
         const rowsHtml = hitRows.slice(0, 5).map((record) => {
